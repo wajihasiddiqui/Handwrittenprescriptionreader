@@ -1,0 +1,47 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# Cloned third-party toolkit (clone it separately)
+PaddleOCR/
+
+# Generated pipeline output (may include patient text)
+output/
+
+# Trained / downloaded model weights (large binaries)
+models/
+*.pdparams
+*.pdopt
+*.pdmodel
+*.pdiparams
+*.pdiparams.info
+*.onnx
+*.inference.json
+
+# Prescription photos and fine-tune crops (private + large)
+data/raw/
+data/finetune/
+
+# Regenerated RxNorm download
+dict/rxnorm_cache.json
+
+# Local env / secrets
+.env
+.env.*
+
+# Logs and OS / IDE junk
+*.log
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/

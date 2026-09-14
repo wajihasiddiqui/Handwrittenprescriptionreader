@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "source": "rxnorm",
+  "fuzzy_threshold": 80,
+  "rxnorm": {
+    "api_base": "https://rxnav.nlm.nih.gov/REST",
+    "prescribable_only": true,
+    "tty": ["IN", "PIN", "BN"],
+    "cache_path": "dict/rxnorm_cache.json",
+    "live_fallback": false
+  },
+  "dose_units": ["mg", "ml", "mcg", "g", "iu", "unit", "units"],
+  "frequencies": ["OD", "BD", "TDS", "QDS", "QID", "TID", "BID", "SOS", "PRN", "HS", "STAT"],
+  "routes": ["PO", "IV", "IM", "SC", "PR", "PV", "SL", "TOP"],
+  "schedules": [
+    "1-0-1", "1-0-0", "0-0-1", "1-1-1", "0-1-0", "1-1-0", "0-1-1",
+    "1+0+1", "0+0+1", "1+1+1", "2+2+2"
+  ],
+  "validation": {
+    "require_inr_for": ["Warfarin"]
+  }
+}

@@ -1,0 +1,201 @@
+BEGINNER GUIDE — Handwritten prescription reader
+No AI background needed. Do the numbered steps in order.
+
+This file is for YOU.
+
+============================================================
+WHAT THIS PROJECT DOES.
+============================================================
+A photo of a prescription goes in. The computer tries to READ the writing,
+then tries to pick out the medicine name and how often to take it.
+A HUMAN must check the answer.
+
+============================================================
+WORDS YOU WILL SEE (learn these first)
+============================================================
+Photo          = the scan/picture of the prescription.
+
+Model          = a saved "brain file" that already learned from many examples.
+                 You do not write the reading rules by hand. The model guesses.
+
+OCR            = Optical Character Recognition = turn a PHOTO into TEXT.
+                 Like: picture of "Panadol" → the letters P-a-n-a-d-o-l.
+
+DBNet          = the part of OCR that draws BOXES around each line.
+                 It answers WHERE the writing is. It does not read letters.
+
+PP-OCRv5 rec   = the part of OCR that READS letters inside each box.
+                 This is the only model we train (fine-tune) on your photos.
+
+PaddleOCR      = the software that runs DBNet + PP-OCRv5.
+
+PaddlePaddle   = the engine under PaddleOCR (like an engine under a car).
+                 Without it, PaddleOCR cannot run.
+
+Fine-tune      = extra practice. Start from a ready-made reader, then show it
+                 YOUR hospital handwriting so it gets a bit better.
+                 It is NOT training a brand-new AI from zero.
+
+NER            = Named Entity Recognition. AFTER the text is read, label the
+                 useful bits: drug name, dose, TDS/OD, days.
+
+spaCy          = a small helper that looks for codes like OD, BD, TDS, PO.
+
+RxNorm         = a big official list of real medicine names (from NLM, USA).
+
+Drug DB        = our local settings + the RxNorm list saved on this PC.
+
+rapidfuzz      = if OCR writes "Amoxicilin", this can match "Amoxicillin".
+
+.venv          = a private Python box for THIS project only, so other programs
+                 on the PC are not mixed in.
+
+pipeline.py    = ONE command that does OCR, then NER, then Drug DB.
+
+
+============================================================
+THE FLOW (picture this)
+============================================================
+  1. Photo
+  2. DBNet draws boxes          WHERE is the writing?
+  3. PP-OCRv5 reads boxes       WHAT does it say?     ← we fine-tune this
+  4. NER + RxNorm               is it a drug? TDS?
+  5. JSON files saved
+  6. Pharmacist / doctor checks  NEVER skip this
+
+Bad reading (fonadol instead of Panadol) → NER cannot find the drug.
+So we fine-tune the READER, not NER.
+
+
+============================================================
+EVERY TIME YOU OPEN THE TERMINAL
+============================================================
+  cd C:\Users\HP\source\repos\AIForMedicalReport
+  .\.venv\Scripts\activate.bat
+
+You MUST see (.venv) at the start of the line.
+If you do not see it, the next python command will fail.
+
+============================================================
+FROM SCRATCH — INSTALL
+============================================================
+Do this again ONLY if you delete .venv or move to a new computer.
+
+1) Install Python 3.12. Check:  python --version
+
+Create Folders
+
+mkdir src
+mkdir data\raw
+mkdir dict
+mkdir output
+mkdir models
+mkdir configs
+
+2) Create environment:
+     cd C:\Users\HP\source\repos\AIForMedicalReport
+     python -m venv .venv
+     .\.venv\Scripts\activate.bat
+
+python -m pip install --upgrade pip
+
+
+3) Engine:
+     python -m pip install paddlepaddle==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+
+4) OCR toolkit:
+     python -m pip install "paddleocr[all]" opencv-python pillow
+
+5) NER helpers:
+     python -m pip install spacy rapidfuzz requests
+
+6) Download medicine names (internet, once):
+     python src\sync_rxnorm.py
+   Creates: dict\rxnorm_cache.json
+
+
+src\ocr_engine.py, src\pipeline.py, dict\drug_db.json, src\sync_rxnorm.py, src\ner_layer.py, clone PaddleOCR
+
+
+git clone https://github.com/PaddlePaddle/PaddleOCR.git
+
+
+
+============================================================
+DAY-TO-DAY — TEST ONE PRESCRIPTION
+============================================================
+1) Put the photo here:
+     data\raw\Test1.png
+   (or .jpg)
+
+2) Run everything:
+     python src\pipeline.py data\raw\Test1.png
+
+3) Open these files (Notepad is fine):
+     output\last_ocr.txt        ← what it READ
+     output\last_ner.json       ← drug / TDS it GUESSED
+     output\last_result.json    ← both together
+
+4) A person checks the JSON. If it is wrong, that is expected until
+   the reader is fine-tuned and until you have many labeled photos.
+
+============================================================
+FINE-TUNE — TEACH THE READER (you are here)
+============================================================
+Meaning: show the reader crops of YOUR page with the correct words,
+so next time it is less likely to write "fonadol".
+
+A) Make training pictures + labels (YOU ALREADY DID THIS):
+     python src\prepare_finetune.py
+   Success looks like:  train=990 val=109 -> data\finetune
+
+B) Train (NEXT COMMAND — run only this, only once):
+     python src\finetune_rec.py
+
+   What you will see:
+     Place(cpu)                 = using this PC's processor, not a GPU
+     load pretrain successful   = started from the official reader
+     epoch: [1/8]               = round 1 of 8 practice rounds
+     acc: 0.000000              = accuracy 0 at the START is NORMAL
+     eta: 1:50:00               = about 2 hours left
+
+   Rules:
+     - Do not close the window
+     - Do not start a second python src\finetune_rec.py
+     - Do not run PaddleOCR\tools\train.py yourself
+
+   When it finishes you want a folder:
+     models\medical_rec_infer\
+
+C) Test again with the same photo:
+     python src\pipeline.py data\raw\Test1.png
+   Compare last_ocr.txt with before.
+
+Honest truth:
+  990 crops from a few pages is a DEMO.
+  Real hospital quality needs thousands of lines labeled by a person.
+  Even then, a human must review every result.
+
+============================================================
+WHAT YOU DO NOT TRAIN
+============================================================
+DBNet (boxes)     keep the official one
+spaCy             only a word list for OD/BD/TDS
+RxNorm            a downloaded dictionary, not a model
+pipeline.py       a script, not a model
+
+============================================================
+IF SOMETHING BREAKS
+============================================================
+"File not found ... train.txt"
+  → run:  python src\prepare_finetune.py   then finetune_rec.py again
+
+"File not found ... Test1.jpg"
+  → your file is probably Test1.png. Use the real name.
+
+"Drug name not found"
+  → OCR text was too messy. Fix the reader (fine-tune), not RxNorm.
+
+Two training windows at once
+  → stop them. Run only one finetune_rec.py.
+
