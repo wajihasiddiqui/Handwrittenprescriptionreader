@@ -1,13 +1,25 @@
 {
   "version": 2,
-  "source": "rxnorm",
+  "source": "all",
   "fuzzy_threshold": 80,
   "rxnorm": {
+    "enabled": true,
     "api_base": "https://rxnav.nlm.nih.gov/REST",
     "prescribable_only": true,
     "tty": ["IN", "PIN", "BN"],
     "cache_path": "dict/rxnorm_cache.json",
     "live_fallback": false
+  },
+  "local_brands": {
+    "enabled": true,
+    "path": "dict/local_brands.json"
+  },
+  "orange_book": {
+    "enabled": true,
+    "cache_path": "dict/orange_book_cache.json",
+    "download_url": "https://www.fda.gov/media/76860/download",
+    "include_otc": true,
+    "exclude_discontinued": true
   },
   "dose_units": ["mg", "ml", "mcg", "g", "iu", "unit", "units"],
   "frequencies": ["OD", "BD", "TDS", "QDS", "QID", "TID", "BID", "SOS", "PRN", "HS", "STAT"],
@@ -18,5 +30,6 @@
   ],
   "validation": {
     "require_inr_for": ["Warfarin"]
-  }
+  },
+  "drugs": []
 }

@@ -2,7 +2,7 @@ Global:
   model_name: PP-OCRv5_mobile_rec
   debug: false
   use_gpu: false
-  epoch_num: 8
+  epoch_num: 4
   log_smooth_window: 10
   print_batch_step: 5
   save_model_dir: ../output/medical_rec
@@ -91,7 +91,7 @@ Train:
             - valid_ratio
   loader:
     shuffle: true
-    batch_size_per_card: 4
+    batch_size_per_card: 2
     drop_last: false
     num_workers: 0
 

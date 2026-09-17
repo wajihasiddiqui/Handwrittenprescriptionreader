@@ -1,0 +1,147 @@
+{
+  "version": 1,
+  "region": "PK",
+  "notes": "Pakistani trade names mapped to RxNorm generics. Add aliases and OCR typos as you see them on slips.",
+  "brands": [
+    {
+      "name": "aspirin",
+      "rxcui": "1191",
+      "aliases": ["Ascard", "ASCARD", "ASCAND", "AssAD"]
+    },
+    {
+      "name": "rivaroxaban",
+      "rxcui": "1114195",
+      "aliases": ["Movaban", "Revoban", "Xetoban", "Oxaban", "Rivaban", "VABPN"]
+    },
+    {
+      "name": "apixaban",
+      "rxcui": "1364430",
+      "aliases": ["Apiban", "Eliquis", "Apixaban", "APIV ABAN", "APIVABAN"]
+    },
+    {
+      "name": "amantadine",
+      "rxcui": "620",
+      "aliases": ["PK-Merz", "PK Merz", "AuDI", "PKMerz", "AMANTNADINE"]
+    },
+    {
+      "name": "Sinemet",
+      "rxcui": "36572",
+      "aliases": ["Sinemet", "SInemet", "SINAMET", "SIn"]
+    },
+    {
+      "name": "Lantus",
+      "rxcui": "261551",
+      "aliases": ["LA-TUs", "LANTUS"]
+    },
+    {
+      "name": "insulin glargine",
+      "rxcui": "274783",
+      "aliases": ["Insugen-G", "Basaglar"]
+    },
+    {
+      "name": "metoprolol",
+      "rxcui": "6918",
+      "aliases": ["Merol", "MeoL", "Lopressor"]
+    },
+    {
+      "name": "tramadol",
+      "rxcui": "10689",
+      "aliases": ["Tramadol", "Trandal", "Tvaudet", "Tramacet", "Tyamadol"]
+    },
+    {
+      "name": "acetaminophen",
+      "rxcui": "161",
+      "aliases": ["Panadol", "Calpol", "Paracetamol", "Tylenol"]
+    },
+    {
+      "name": "amoxicillin",
+      "rxcui": "723",
+      "aliases": ["Amoxil", "Moxclav"]
+    },
+    {
+      "name": "clopidogrel",
+      "rxcui": "32968",
+      "aliases": ["Plavix", "Clopilet"]
+    },
+    {
+      "name": "atorvastatin",
+      "rxcui": "83367",
+      "aliases": ["Lipitor", "Atorva"]
+    },
+    {
+      "name": "amlodipine",
+      "rxcui": "17767",
+      "aliases": ["Norvasc", "Amvasc"]
+    },
+    {
+      "name": "losartan",
+      "rxcui": "52175",
+      "aliases": ["Cozaar", "Angizaar"]
+    },
+    {
+      "name": "bisoprolol",
+      "rxcui": "19484",
+      "aliases": ["Concor", "Cardicor"]
+    },
+    {
+      "name": "omeprazole",
+      "rxcui": "7646",
+      "aliases": ["Losec", "Risek"]
+    },
+    {
+      "name": "esomeprazole",
+      "rxcui": "283742",
+      "aliases": ["Nexium", "Esomax", "Aaxdo"]
+    },
+    {
+      "name": "metformin",
+      "rxcui": "6809",
+      "aliases": ["Glucophage", "Obimet"]
+    },
+    {
+      "name": "glyburide",
+      "rxcui": "4815",
+      "aliases": ["Glibenclamide", "Daonil"]
+    },
+    {
+      "name": "levothyroxine",
+      "rxcui": "10582",
+      "aliases": ["Eltroxin", "Thyroxine", "Thyronorm"]
+    },
+    {
+      "name": "warfarin",
+      "rxcui": "11289",
+      "aliases": ["Coumadin", "Warfarin"]
+    },
+    {
+      "name": "furosemide",
+      "rxcui": "4603",
+      "aliases": ["Lasix", "Lasoride"]
+    },
+    {
+      "name": "spironolactone",
+      "rxcui": "9997",
+      "aliases": ["Aldactone", "Spiromide"]
+    },
+    {
+      "name": "hydrochlorothiazide",
+      "rxcui": "5487",
+      "aliases": ["Esidrex", "HCTZ"]
+    },
+    {
+      "name": "pregabalin",
+      "rxcui": "187832",
+      "aliases": ["Lyrica", "Pregeb"]
+    },
+    {
+      "name": "gabapentin",
+      "rxcui": "25480",
+      "aliases": ["Neurontin", "Gabica"]
+    },
+    {
+      "name": "sitagliptin",
+      "rxcui": "593411",
+      "aliases": ["Januvia", "Tesavel"]
+    }
+  ]
+}

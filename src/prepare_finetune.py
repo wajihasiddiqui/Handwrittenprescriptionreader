@@ -61,6 +61,12 @@ LABEL_FIX = {
     "Diagnosis": "Diagnosis",
     "Age": "Age",
     "115596724": "115596724",
+    "AsAD": "ASCARD",
+    "Pp(VABPN":    "APIXABAN",
+    "SInn":         "SINAMET",
+    "An AuDI NEs":  "AMANTADINE",
+    "LA-TUs":    "LANTUS",
+    "Tvaudet":   "Tramadol",    
 }
 
 
@@ -144,7 +150,7 @@ def main() -> None:
                     continue
                 rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
                 base = Image.fromarray(rgb)
-                versions = [base] + [augment(base, rng) for _ in range(6)]
+                versions = [base] + [augment(base, rng) for _ in range(8)]
                 for ver in versions:
                     name = f"rec_{idx:05d}.png"
                     ver.save(IMAGES / name)

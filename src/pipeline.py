@@ -1,4 +1,4 @@
-"""End-to-end prescription pipeline: OCR (PP-OCRv5) then NER (RxNorm)."""
+"""End-to-end prescription pipeline: OCR (PP-OCRv5) then NER (all drug DBs)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ SRC = Path(__file__).resolve().parent
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from ner_layer import extract_entities
+from ner_layer import extract_entities, format_medicines_table
 from ocr_engine import ocr_image
 
 ROOT = SRC.parent
@@ -23,7 +23,7 @@ def run_pipeline(image_path: Path) -> dict:
     ocr_text = "\n".join(lines).strip()
     (OUTPUT / "last_ocr.txt").write_text(ocr_text or "(no text found)", encoding="utf-8")
 
-    ner = extract_entities(" ".join(lines) if lines else "")
+    ner = extract_entities(" ".join(lines) if lines else "", lines=lines)
     (OUTPUT / "last_ner.json").write_text(json.dumps(ner, indent=2), encoding="utf-8")
 
     result = {
@@ -51,8 +51,13 @@ def main() -> None:
     result = run_pipeline(image_path)
     print("\n--- OCR ---")
     print(result["ocr_text"] or "(no text found)")
+    print("\n--- Drug DBs ---")
+    stats = (result["ner"] or {}).get("drug_db_stats") or {}
+    print(json.dumps(stats, indent=2))
+    print("\n--- MEDICINES ---")
+    print(format_medicines_table((result["ner"] or {}).get("drugs") or []))
     print("\n--- NER ---")
-    print(json.dumps(result["ner"], indent=2, ensure_ascii=False))
+    print(json.dumps((result["ner"] or {}).get("drugs") or [], indent=2, ensure_ascii=False))
     print(f"\nSaved: {OUTPUT / 'last_result.json'}")
 
 

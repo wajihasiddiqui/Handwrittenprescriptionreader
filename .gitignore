@@ -33,6 +33,7 @@ data/finetune/
 
 # Regenerated RxNorm download
 dict/rxnorm_cache.json
+dict/orange_book_cache.json
 
 # Local env / secrets
 .env
