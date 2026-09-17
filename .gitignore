@@ -31,9 +31,8 @@ models/
 data/raw/
 data/finetune/
 
-# Regenerated RxNorm download
+# Regenerated RxNorm download (large; run python src\sync_rxnorm.py)
 dict/rxnorm_cache.json
-dict/orange_book_cache.json
 
 # Local env / secrets
 .env
