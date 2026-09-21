@@ -39,7 +39,7 @@ def dose_pattern(db: DrugDatabase) -> re.Pattern[str]:
 
 
 def correct_drug_name(ocr_text: str, db: DrugDatabase | None = None) -> tuple[str, int, str | None]:
-    name, score, source, _matched = match_drug_term(ocr_text, db)
+    name, score, source, _generic = match_drug_term(ocr_text, db)
     return name, score, source
 
 
@@ -52,7 +52,7 @@ def match_drug_term(
     if compact != ocr_text:
         phrases.append(compact)
 
-    best: tuple[str, int, str | None, str] | None = None
+    best: tuple[str, int, str | None, str | None] | None = None
     for phrase in phrases:
         result = process.extractOne(
             phrase,
@@ -66,13 +66,13 @@ def match_drug_term(
         matched, score, _ = result
         score = int(score)
         if best is None or score > best[1]:
-            best = (db.canonical_name(matched), score, db.source_for(matched), matched)
+            best = (matched, score, db.source_for(matched), db.canonical_name(matched))
     if best:
         return best
     if db.live_fallback:
         live = _rxnorm_live_match(ocr_text, db)
         if live:
-            return live[0], live[1], "rxnorm", ocr_text
+            return live[0], live[1], "rxnorm", live[0]
     return ocr_text, 0, None, None
 
 
@@ -239,7 +239,7 @@ def find_drugs(text: str, db: DrugDatabase) -> list[dict]:
             if any(tok.upper() in skip for tok in window):
                 continue
             phrase = " ".join(window)
-            name, score, source, _matched = match_drug_term(phrase, db)
+            name, score, source, generic = match_drug_term(phrase, db)
             if not _accept_match(phrase, width, score, db):
                 continue
             if source in ("rxnorm", "orange_book") and score < 90:
@@ -249,6 +249,7 @@ def find_drugs(text: str, db: DrugDatabase) -> list[dict]:
                     "start": i,
                     "end": i + width,
                     "name": name,
+                    "generic": generic or name,
                     "confidence": score,
                     "source": source,
                     "matched": phrase,
@@ -443,14 +444,16 @@ def _clip_sig_snippet(snippet: str) -> str:
 
 def _row(drug: dict, sig: dict, db: DrugDatabase) -> dict:
     name = drug["name"]
+    generic = drug.get("generic") or db.canonical_name(name)
     return {
         "drug": name,
+        "generic": generic,
         "dosage": sig.get("dosage"),
         "schedule": sig.get("schedule"),
         "frequency": sig.get("frequency"),
         "route": sig.get("route"),
         "duration": sig.get("duration"),
-        "rxcui": db.rxcui_for(name),
+        "rxcui": db.rxcui_for(name) or db.rxcui_for(generic),
         "confidence": drug["confidence"],
         "source": drug["source"],
         "matched": drug["matched"],
@@ -504,12 +507,13 @@ def _drugs_from_lines(lines: list[str], db: DrugDatabase) -> list[dict]:
 
 
 def format_medicines_table(drugs: list[dict]) -> str:
-    headers = ["DRUG", "DOSAGE", "SCHEDULE", "FREQUENCY", "ROUTE", "DURATION"]
+    headers = ["DRUG", "GENERIC", "DOSAGE", "SCHEDULE", "FREQUENCY", "ROUTE", "DURATION"]
     table = [headers]
     for item in drugs:
         table.append(
             [
                 str(item.get("drug") or "-"),
+                str(item.get("generic") or "-"),
                 str(item.get("dosage") or "-"),
                 str(item.get("schedule") or "-"),
                 str(item.get("frequency") or "-"),
