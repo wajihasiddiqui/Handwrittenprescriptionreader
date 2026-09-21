@@ -2,30 +2,20 @@
 
 from __future__ import annotations
 
-import csv
-import io
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
 from rapidfuzz import fuzz, process
 
 from drug_db import DEFAULT_DB_PATH, ROOT, local_brands_path, rxnorm_cache_path
 from drap_price import BASE_URL as DRAP_URL
-from drap_price import fetch_all_products, short_brand, short_generic
+from drap_price import extract_inn, fetch_all_products, first_brand_token, short_brand, short_generic
+from pharmapedia import BASE_URL as PHARMAPEDIA_URL
+from pharmapedia import fetch_all_medicines
 
-TIMEOUT = 120
-UA = {"User-Agent": "HandwrittenPrescriptionReader/1.0"}
-
-DAWAI_URL = (
-    "https://raw.githubusercontent.com/muhammad-hassaan-naeem/dawai-finder/"
-    "main/data/sample_medicines.csv"
-)
-HF_URL = (
-    "https://huggingface.co/datasets/opendoc-pakistan/pakistan_drug_registry/"
-    "resolve/main/data/processed/drug_registry.csv"
-)
+PAREN_SALT_RE = re.compile(r"\s*\([^)]*\)")
 
 GENERIC_SYNONYMS = {
     "paracetamol": "acetaminophen",
@@ -47,13 +37,6 @@ GENERIC_SYNONYMS = {
 }
 
 
-def _download_csv(url: str) -> list[dict]:
-    response = requests.get(url, timeout=TIMEOUT, headers=UA)
-    response.raise_for_status()
-    text = response.content.decode("utf-8-sig", errors="replace")
-    return list(csv.DictReader(io.StringIO(text)))
-
-
 def _load_rxnorm_lookup(root: Path = ROOT) -> tuple[list[str], dict[str, str]]:
     raw = json.loads(DEFAULT_DB_PATH.read_text(encoding="utf-8"))
     cache_file = rxnorm_cache_path(raw, root)
@@ -73,7 +56,8 @@ def _load_rxnorm_lookup(root: Path = ROOT) -> tuple[list[str], dict[str, str]]:
 
 
 def _clean_generic(value: str) -> str:
-    text = " ".join(value.replace("/", " / ").replace("+", " + ").split()).strip()
+    text = PAREN_SALT_RE.sub(" ", value)
+    text = " ".join(text.replace("/", " / ").replace("+", " + ").split()).strip(" -/")
     return GENERIC_SYNONYMS.get(text.lower(), text)
 
 
@@ -133,24 +117,53 @@ def collect_drap(groups: dict[str, dict], rx_names: list[str], name_to_rxcui: di
     for row in products:
         product = str(row.get("product_name") or "").strip()
         generic_raw = str(row.get("generic_name") or "").strip()
-        brand = short_brand(product)
-        generic = short_generic(generic_raw) or generic_raw
+        brand = short_brand(product) or first_brand_token(product)
+        generic = extract_inn(generic_raw) or short_generic(generic_raw) or generic_raw
         if not brand:
             continue
+        aliases = [brand, product, first_brand_token(product)]
         canonical, rxcui = ("", "")
         if generic and generic.lower() != brand.lower():
             gkey = generic.lower()
             if gkey not in mapped:
                 mapped[gkey] = _map_generic(generic, rx_names, name_to_rxcui)
             canonical, rxcui = mapped[gkey]
-        if canonical and rxcui:
-            _add_alias(groups, canonical, rxcui, brand)
-            if product != brand:
-                _add_alias(groups, canonical, rxcui, product)
-        else:
-            _add_alias(groups, brand, rxcui, brand)
-            if product != brand:
-                _add_alias(groups, brand, rxcui, product)
+        target = canonical or brand
+        for alias in aliases:
+            _add_alias(groups, target, rxcui, alias)
+
+
+def collect_pharmapedia(
+    groups: dict[str, dict],
+    rx_names: list[str],
+    name_to_rxcui: dict[str, str],
+    *,
+    refresh: bool,
+) -> None:
+    payload = fetch_all_medicines(refresh=refresh)
+    mapped: dict[str, tuple[str, str]] = {}
+    for row in payload.get("brands") or []:
+        brand = str(row.get("name") or "").strip()
+        generic_raw = str(row.get("generic_name") or "").strip()
+        if not brand:
+            continue
+        generic = _clean_generic(generic_raw) or generic_raw
+        canonical, rxcui = ("", "")
+        if generic and generic.lower() != brand.lower():
+            gkey = generic.lower()
+            if gkey not in mapped:
+                mapped[gkey] = _map_generic(generic, rx_names, name_to_rxcui)
+            canonical, rxcui = mapped[gkey]
+        target = canonical or generic or brand
+        _add_alias(groups, target, rxcui, brand)
+        if generic:
+            _add_alias(groups, target, rxcui, generic)
+    for row in payload.get("generics") or []:
+        generic = _clean_generic(str(row.get("name") or ""))
+        if not generic:
+            continue
+        canonical, rxcui = _map_generic(generic, rx_names, name_to_rxcui)
+        _add_alias(groups, canonical or generic, rxcui, generic)
 
 
 def collect_fetched(
@@ -158,44 +171,12 @@ def collect_fetched(
     name_to_rxcui: dict[str, str],
     *,
     refresh_drap: bool = False,
+    refresh_pharmapedia: bool = False,
 ) -> dict[str, dict]:
     groups: dict[str, dict] = {}
 
-    print("Downloading dawai-finder + HuggingFace lists ...")
-    dawai_rows = _download_csv(DAWAI_URL)
-    for row in dawai_rows:
-        brand = str(row.get("brand_name") or "").strip()
-        generic = str(row.get("generic_name") or "").strip()
-        if not brand or not generic:
-            continue
-        canonical, rxcui = _map_generic(generic, rx_names, name_to_rxcui)
-        _add_alias(groups, canonical or generic, rxcui, brand)
-        _add_alias(groups, canonical or generic, rxcui, generic)
-
-    hf_rows = _download_csv(HF_URL)
-    for row in hf_rows:
-        brand = str(row.get("product_name") or "").strip()
-        if not brand:
-            continue
-        exact = name_to_rxcui.get(brand.lower())
-        if exact:
-            _add_alias(groups, brand, exact, brand)
-            continue
-        hit = None
-        if rx_names:
-            hit = process.extractOne(
-                brand,
-                rx_names,
-                scorer=fuzz.ratio,
-                processor=str.lower,
-                score_cutoff=96,
-            )
-        if hit:
-            matched = hit[0]
-            _add_alias(groups, matched, name_to_rxcui.get(matched.lower(), ""), brand)
-        else:
-            _add_alias(groups, brand, "", brand)
-
+    print("Fetching Pharmapedia medicines ...")
+    collect_pharmapedia(groups, rx_names, name_to_rxcui, refresh=refresh_pharmapedia)
     print("Fetching DRAP price index (all pages) ...")
     collect_drap(groups, rx_names, name_to_rxcui, refresh=refresh_drap)
     return groups
@@ -232,6 +213,7 @@ def main() -> None:
     import sys
 
     refresh_drap = "--refresh-drap" in sys.argv
+    refresh_pharmapedia = "--refresh-pharmapedia" in sys.argv
     raw_cfg = json.loads(DEFAULT_DB_PATH.read_text(encoding="utf-8"))
     brands_path = local_brands_path(raw_cfg, ROOT)
     if brands_path is None:
@@ -245,7 +227,12 @@ def main() -> None:
     rx_names, name_to_rxcui = _load_rxnorm_lookup(ROOT)
     print(f"RxNorm names: {len(rx_names)}")
 
-    groups = collect_fetched(rx_names, name_to_rxcui, refresh_drap=refresh_drap)
+    groups = collect_fetched(
+        rx_names,
+        name_to_rxcui,
+        refresh_drap=refresh_drap,
+        refresh_pharmapedia=refresh_pharmapedia,
+    )
     print(f"Fetched generic groups: {len(groups)}")
     groups = merge_existing(groups, existing)
     brands = to_brand_list(groups)
@@ -256,11 +243,15 @@ def main() -> None:
         "version": 2,
         "region": "PK",
         "notes": (
-            "Pakistani trade names mapped to RxNorm generics where possible. "
-            "Includes DRAP public price index plus other public Pakistan lists and OCR aliases."
+            "Pakistani trade names scraped from Pharmapedia Pro and the DRAP "
+            "public price index, mapped to RxNorm generics where possible."
         ),
         "updated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "sources": [DRAP_URL, DAWAI_URL, HF_URL, "dict/local_brands.json (previous aliases)"],
+        "sources": [
+            PHARMAPEDIA_URL,
+            DRAP_URL,
+            "dict/local_brands.json (previous aliases)",
+        ],
         "count": len(brands),
         "alias_count": alias_count,
         "mapped_to_rxnorm": mapped,
