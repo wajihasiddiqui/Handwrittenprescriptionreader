@@ -8,6 +8,6 @@
     "prompt": "Text Recognition:",
     "timeout": 900,
     "max_image_side": 1600,
-    "num_predict": 2048
+    "num_predict": 768
   }
 }

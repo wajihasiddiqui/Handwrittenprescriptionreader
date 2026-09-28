@@ -478,6 +478,26 @@ def _is_stop_line(line: str) -> bool:
     return bool(SIG_STOP_RE.search(line))
 
 
+def _dedupe_drugs(drugs: list[dict]) -> list[dict]:
+    """Keep one row per drug name (highest confidence wins)."""
+    best: dict[str, dict] = {}
+    order: list[str] = []
+    for item in drugs:
+        name = str(item.get("drug") or item.get("name") or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        conf = int(item.get("confidence") or item.get("score") or 0)
+        if key not in best:
+            best[key] = item
+            order.append(key)
+            continue
+        prev = int(best[key].get("confidence") or best[key].get("score") or 0)
+        if conf > prev:
+            best[key] = item
+    return [best[k] for k in order]
+
+
 def _drugs_from_lines(lines: list[str], db: DrugDatabase) -> list[dict]:
     rows: list[dict] = []
     i = 0
@@ -503,7 +523,7 @@ def _drugs_from_lines(lines: list[str], db: DrugDatabase) -> list[dict]:
         snippet = _clip_sig_snippet(" ".join(extra))
         rows.append(_row(drug, _sig_from_text(snippet, db, drug["name"]), db))
         i = j
-    return rows
+    return _dedupe_drugs(rows)
 
 
 def format_medicines_table(drugs: list[dict]) -> str:
@@ -540,7 +560,7 @@ def extract_entities(text: str, lines: list[str] | None = None) -> dict:
         drugs = _drugs_from_lines(lines, db)
     else:
         found = find_drugs(text, db)
-        drugs = _attach_sig(found, text, db)
+        drugs = _dedupe_drugs(_attach_sig(found, text, db))
 
     entities = {
         "drugs": drugs,

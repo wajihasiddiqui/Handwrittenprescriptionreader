@@ -116,7 +116,8 @@ def _ollama_generate_vision(image_path: Path) -> str:
         "stream": False,
         "options": {
             "temperature": 0,
-            "num_predict": int(cfg.get("num_predict") or 2048),
+            "num_predict": int(cfg.get("num_predict") or 768),
+            "stop": ["```", "\n```", "```\n"],
         },
     }
     req = urllib.request.Request(
@@ -142,18 +143,51 @@ def _ollama_generate_vision(image_path: Path) -> str:
     return str(payload.get("response") or "").strip()
 
 
-def ocr_image(image_path: Path, output_dir: Path | None = None) -> list[str]:
-    """Run local GLM-OCR through Ollama on this laptop and return text lines."""
-    _load_dotenv()
-    text = _ollama_generate_vision(Path(image_path))
+def _dedupe_ocr_text(text: str) -> str:
+    """Drop repeated full-page copies and empty markdown fences from GLM-OCR."""
     lines: list[str] = []
     for part in text.splitlines():
         part = part.strip()
         if not part:
             continue
-        if set(part) <= {"`", " "}:
+        if set(part) <= {"`", " ", "*"}:
+            # Model often loops on ``` after finishing the page.
+            if lines:
+                break
             continue
         lines.append(part)
+
+    if not lines:
+        return ""
+
+    # If the first content line appears again, the page was printed twice+.
+    anchor = lines[0]
+    for i in range(1, len(lines)):
+        if lines[i] == anchor and i >= 3:
+            lines = lines[:i]
+            break
+
+    # Also collapse exact half-copies when lengths match.
+    if len(lines) >= 4:
+        half = len(lines) // 2
+        first = lines[:half]
+        second = lines[half : half + len(first)]
+        if first and first == second:
+            lines = first
+
+    # Drop consecutive duplicate lines.
+    cleaned: list[str] = []
+    for line in lines:
+        if cleaned and cleaned[-1] == line:
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned)
+
+def ocr_image(image_path: Path, output_dir: Path | None = None) -> list[str]:
+    """Run local GLM-OCR through Ollama on this laptop and return text lines."""
+    _load_dotenv()
+    text = _dedupe_ocr_text(_ollama_generate_vision(Path(image_path)))
+    lines = [part for part in text.splitlines() if part.strip()]
 
     if output_dir is not None:
         out = Path(output_dir)

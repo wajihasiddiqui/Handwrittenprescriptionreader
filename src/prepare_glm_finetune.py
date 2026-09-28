@@ -6,7 +6,7 @@ Input:
 
 Output:
   data/glm_finetune/prescriptions.json
-  data/glm_finetune/prescription_images/  (copied/linked images for LLaMA-Factory)
+  data/glm_finetune/prescription_images/
 
 Also syncs into third_party/LLaMA-Factory/data/ when that folder exists.
 """
@@ -36,23 +36,33 @@ def _read_labels(path: Path) -> list[tuple[str, str]]:
         example = SRC_DIR / "labels.example.csv"
         raise SystemExit(
             f"Missing {path}\n"
-            f"Copy {example.name} to labels.csv and fill image,text rows."
+            f"Copy {example.name} to labels.csv and fill image,text rows.\n"
+            f"  copy data\\glm_finetune\\labels.example.csv data\\glm_finetune\\labels.csv"
         )
     rows: list[tuple[str, str]] = []
     with path.open(encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
-        if not reader.fieldnames or "image" not in reader.fieldnames or "text" not in reader.fieldnames:
+        fields = {str(x).strip().lower(): str(x) for x in (reader.fieldnames or [])}
+        if "image" not in fields or "text" not in fields:
             raise SystemExit("labels.csv must have columns: image,text")
+        img_key = fields["image"]
+        txt_key = fields["text"]
         for i, row in enumerate(reader, start=2):
-            image = str(row.get("image") or "").strip()
-            text = str(row.get("text") or "").strip()
+            image = str(row.get(img_key) or "").strip()
+            text = str(row.get(txt_key) or "").strip()
             if not image and not text:
                 continue
             if not image or not text:
                 raise SystemExit(f"Row {i}: both image and text are required")
+            # Skip example placeholder rows that have no real files yet
+            if image.startswith("example_"):
+                continue
             rows.append((image, text))
     if not rows:
-        raise SystemExit("labels.csv has no data rows")
+        raise SystemExit(
+            "labels.csv has no usable data rows.\n"
+            "Add real image filenames + correct OCR text (not example_* placeholders)."
+        )
     return rows
 
 
@@ -63,6 +73,10 @@ def _resolve_image(name: str) -> Path:
     under = IMAGES_DIR / name
     if under.is_file():
         return under
+    # also allow nested relative paths under images/
+    under2 = IMAGES_DIR / Path(name).name
+    if under2.is_file():
+        return under2
     raise FileNotFoundError(f"Image not found: {name} (looked in {IMAGES_DIR})")
 
 
@@ -99,6 +113,8 @@ def build_samples(rows: list[tuple[str, str]]) -> list[dict]:
             f"  - {preview}{more}\n"
             "Add the files or fix labels.csv names."
         )
+    if not samples:
+        raise SystemExit("No samples built.")
     return samples
 
 
@@ -115,7 +131,7 @@ def _merge_dataset_info(target: Path) -> None:
 def sync_to_llama_factory(samples: list[dict]) -> None:
     if not LLAMA_DATA.exists():
         print(f"LLaMA-Factory data dir not found yet: {LLAMA_DATA}")
-        print("Run scripts/setup_glm_finetune.sh on the GPU machine first.")
+        print("Run: python src/llamafactory_train.py setup")
         return
     img_dest = LLAMA_DATA / "prescription_images"
     if img_dest.exists():
@@ -127,6 +143,7 @@ def sync_to_llama_factory(samples: list[dict]) -> None:
     )
     _merge_dataset_info(LLAMA_DATA / "dataset_info.json")
     print(f"Synced {len(samples)} samples into {LLAMA_DATA}")
+    print("Registered dataset name: prescriptions")
 
 
 def main() -> None:

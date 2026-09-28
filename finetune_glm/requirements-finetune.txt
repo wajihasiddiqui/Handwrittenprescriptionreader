@@ -1,6 +1,9 @@
-# GPU machine only — keep separate from the laptop OCR .venv
-torch>=2.10.0
-torchvision>=0.25.0
+# GPU machine only (separate from laptop OCR .venv)
+# Install CUDA torch first if needed, e.g.:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+torch>=2.4.0
+torchvision>=0.19.0
 transformers>=5.3.0
 accelerate>=1.13.0
 peft>=0.14.0
@@ -13,3 +16,5 @@ pillow
 pyyaml
 tqdm
 numpy
+safetensors
+huggingface_hub
