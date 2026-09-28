@@ -1,63 +1,174 @@
-"""PP-OCRv5 text extraction (detection + recognition)."""
+"""GLM-OCR text extraction — local on this laptop via Ollama (no cloud API key)."""
 
 from __future__ import annotations
 
+import base64
+import json
+import os
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-from paddleocr import PaddleOCR
-
 ROOT = Path(__file__).resolve().parents[1]
-FINETUNED_REC = ROOT / "models" / "medical_rec_infer"
+CONFIG_PATH = ROOT / "configs" / "ocr.json"
 
-_OCR = None
-
-
-def _rec_dir() -> str | None:
-    if (FINETUNED_REC / "inference.yml").exists() or (FINETUNED_REC / "inference.json").exists():
-        return str(FINETUNED_REC)
-    return None
+_OCR_CFG: dict | None = None
 
 
-def get_ocr() -> PaddleOCR:
-    global _OCR
-    if _OCR is None:
-        kwargs = dict(
-            text_detection_model_name="PP-OCRv5_mobile_det",
-            text_recognition_model_name="PP-OCRv5_mobile_rec",
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
+def _load_dotenv() -> None:
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def load_ocr_config() -> dict:
+    global _OCR_CFG
+    if _OCR_CFG is None:
+        if CONFIG_PATH.exists():
+            _OCR_CFG = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        else:
+            _OCR_CFG = {}
+    return _OCR_CFG
+
+
+def get_backend() -> str:
+    return "glm-ocr-local"
+
+
+def last_backend() -> str:
+    return "glm-ocr-local"
+
+
+def _glm_cfg() -> dict:
+    return load_ocr_config().get("glm_ocr") or {}
+
+
+def _check_ollama(host: str = "127.0.0.1", port: int = 11434) -> None:
+    url = f"http://{host}:{port}/api/tags"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            "Ollama is not running on this laptop.\n"
+            "1) Install: https://ollama.com/download\n"
+            "2) Pull model:  ollama pull glm-ocr:latest\n"
+            "3) Start the Ollama Windows app, then retry."
+        ) from exc
+
+    names = [
+        str(row.get("name") or row.get("model") or "")
+        for row in (payload.get("models") or [])
+    ]
+    names = [n for n in names if n]
+    if not any(n.startswith("glm-ocr") for n in names):
+        raise RuntimeError(
+            "Ollama is running, but glm-ocr is not installed yet.\n"
+            "Run:  ollama pull glm-ocr:latest\n"
+            f"Installed models: {names or '(none)'}"
         )
-        rec_dir = _rec_dir()
-        if rec_dir:
-            kwargs["text_recognition_model_dir"] = rec_dir
-        _OCR = PaddleOCR(**kwargs)
-    return _OCR
 
 
-def collect_texts(result) -> list[str]:
-    texts: list[str] = []
-    for res in result:
-        rec = getattr(res, "rec_texts", None)
-        if rec is None and hasattr(res, "get"):
-            rec = res.get("rec_texts")
-        if rec:
-            texts.extend(rec)
-    if texts:
-        return texts
-    for res in result:
-        data = res if isinstance(res, dict) else getattr(res, "json", None) or {}
-        if isinstance(data, dict):
-            texts.extend(data.get("rec_texts") or [])
-    return texts
+def _prepare_image_bytes(image_path: Path, max_side: int = 1600) -> tuple[bytes, str]:
+    """Downscale large photos so CPU OCR finishes in reasonable time."""
+    import io
+
+    from PIL import Image
+
+    with Image.open(image_path) as img:
+        img = img.convert("RGB")
+        w, h = img.size
+        scale = min(1.0, float(max_side) / float(max(w, h)))
+        if scale < 1.0:
+            img = img.resize(
+                (max(1, int(w * scale)), max(1, int(h * scale))),
+                Image.Resampling.LANCZOS,
+            )
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue(), "image/jpeg"
+
+
+def _ollama_generate_vision(image_path: Path) -> str:
+    cfg = _glm_cfg()
+    host = str(cfg.get("host") or "127.0.0.1")
+    port = int(cfg.get("port") or 11434)
+    model = str(cfg.get("model") or "glm-ocr:latest")
+    timeout = int(cfg.get("timeout") or 900)
+    prompt = str(cfg.get("prompt") or "Text Recognition:")
+    max_side = int(cfg.get("max_image_side") or 1600)
+
+    _check_ollama(host, port)
+    raw, _mime = _prepare_image_bytes(image_path, max_side=max_side)
+    body = {
+        "model": model,
+        "prompt": prompt,
+        "images": [base64.b64encode(raw).decode("ascii")],
+        "stream": False,
+        "options": {
+            "temperature": 0,
+            "num_predict": int(cfg.get("num_predict") or 2048),
+        },
+    }
+    req = urllib.request.Request(
+        f"http://{host}:{port}/api/generate",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"Ollama timed out after {timeout}s while reading {image_path.name}.\n"
+            "CPU OCR can be slow. Keep Ollama running and retry."
+        ) from exc
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"Ollama HTTP {exc.code}: {detail}") from exc
+
+    if payload.get("error"):
+        raise RuntimeError(f"Ollama error: {payload['error']}")
+    return str(payload.get("response") or "").strip()
 
 
 def ocr_image(image_path: Path, output_dir: Path | None = None) -> list[str]:
-    result = get_ocr().predict(str(image_path))
+    """Run local GLM-OCR through Ollama on this laptop and return text lines."""
+    _load_dotenv()
+    text = _ollama_generate_vision(Path(image_path))
+    lines: list[str] = []
+    for part in text.splitlines():
+        part = part.strip()
+        if not part:
+            continue
+        if set(part) <= {"`", " "}:
+            continue
+        lines.append(part)
+
     if output_dir is not None:
-        for res in result:
-            # Do not call res.print() — Paddle dumps a huge config and can
-            # crash Windows consoles with RecursionError in logging.
-            if hasattr(res, "save_to_json"):
-                res.save_to_json(str(output_dir))
-    return collect_texts(result)
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / f"{Path(image_path).stem}_glmocr.json").write_text(
+            json.dumps(
+                {
+                    "backend": "glm-ocr-local",
+                    "model": (_glm_cfg().get("model") or "glm-ocr:latest"),
+                    "text": text,
+                    "lines": lines,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    return lines

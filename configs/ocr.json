@@ -1,0 +1,13 @@
+{
+  "backend": "glm-ocr",
+  "glm_ocr": {
+    "mode": "local",
+    "host": "127.0.0.1",
+    "port": 11434,
+    "model": "glm-ocr:latest",
+    "prompt": "Text Recognition:",
+    "timeout": 900,
+    "max_image_side": 1600,
+    "num_predict": 2048
+  }
+}

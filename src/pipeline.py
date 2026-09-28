@@ -1,4 +1,4 @@
-"""End-to-end prescription pipeline: OCR (PP-OCRv5) then NER (all drug DBs)."""
+"""End-to-end prescription pipeline: OCR (GLM-OCR via Ollama) then NER."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from ner_layer import extract_entities, format_medicines_table
-from ocr_engine import ocr_image
+from ocr_engine import last_backend, ocr_image
 
 ROOT = SRC.parent
 OUTPUT = ROOT / "output"
@@ -28,6 +28,7 @@ def run_pipeline(image_path: Path) -> dict:
 
     result = {
         "image": str(image_path.resolve()),
+        "ocr_backend": last_backend(),
         "ocr_lines": lines,
         "ocr_text": ocr_text,
         "ner": ner,
@@ -49,7 +50,7 @@ def main() -> None:
         sys.exit(1)
 
     result = run_pipeline(image_path)
-    print("\n--- OCR ---")
+    print(f"\n--- OCR ({result.get('ocr_backend')}) ---")
     print(result["ocr_text"] or "(no text found)")
     print("\n--- Drug DBs ---")
     stats = (result["ner"] or {}).get("drug_db_stats") or {}
