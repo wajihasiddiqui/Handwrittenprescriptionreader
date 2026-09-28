@@ -1,13 +1,12 @@
 {
-  "backend": "glm-ocr",
-  "glm_ocr": {
-    "mode": "local",
+  "backend": "llamafactory",
+  "llamafactory": {
     "host": "127.0.0.1",
-    "port": 11434,
-    "model": "glm-ocr:latest",
+    "port": 8000,
+    "model": "zai-org/GLM-OCR",
     "prompt": "Text Recognition:",
     "timeout": 900,
     "max_image_side": 1600,
-    "num_predict": 768
+    "max_tokens": 768
   }
 }

@@ -1,0 +1,8 @@
+### LLaMA-Factory inference config for GLM-OCR
+model_name_or_path: zai-org/GLM-OCR
+template: glm_ocr
+trust_remote_code: true
+infer_backend: huggingface
+# After LoRA training, uncomment and point to your adapter:
+# adapter_name_or_path: saves/glm-ocr/lora/sft
+# finetuning_type: lora

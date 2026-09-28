@@ -1,4 +1,4 @@
-"""GLM-OCR text extraction — local on this laptop via Ollama (no cloud API key)."""
+"""GLM-OCR via LLaMA-Factory OpenAI-compatible API only."""
 
 from __future__ import annotations
 
@@ -41,45 +41,18 @@ def load_ocr_config() -> dict:
 
 
 def get_backend() -> str:
-    return "glm-ocr-local"
+    return "llamafactory"
 
 
 def last_backend() -> str:
-    return "glm-ocr-local"
+    return "llamafactory"
 
 
-def _glm_cfg() -> dict:
-    return load_ocr_config().get("glm_ocr") or {}
+def _cfg() -> dict:
+    return load_ocr_config().get("llamafactory") or load_ocr_config().get("glm_ocr") or {}
 
 
-def _check_ollama(host: str = "127.0.0.1", port: int = 11434) -> None:
-    url = f"http://{host}:{port}/api/tags"
-    try:
-        with urllib.request.urlopen(url, timeout=5) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.URLError as exc:
-        raise RuntimeError(
-            "Ollama is not running on this laptop.\n"
-            "1) Install: https://ollama.com/download\n"
-            "2) Pull model:  ollama pull glm-ocr:latest\n"
-            "3) Start the Ollama Windows app, then retry."
-        ) from exc
-
-    names = [
-        str(row.get("name") or row.get("model") or "")
-        for row in (payload.get("models") or [])
-    ]
-    names = [n for n in names if n]
-    if not any(n.startswith("glm-ocr") for n in names):
-        raise RuntimeError(
-            "Ollama is running, but glm-ocr is not installed yet.\n"
-            "Run:  ollama pull glm-ocr:latest\n"
-            f"Installed models: {names or '(none)'}"
-        )
-
-
-def _prepare_image_bytes(image_path: Path, max_side: int = 1600) -> tuple[bytes, str]:
-    """Downscale large photos so CPU OCR finishes in reasonable time."""
+def _prepare_image_bytes(image_path: Path, max_side: int = 1600) -> bytes:
     import io
 
     from PIL import Image
@@ -95,87 +68,33 @@ def _prepare_image_bytes(image_path: Path, max_side: int = 1600) -> tuple[bytes,
             )
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
-        return buf.getvalue(), "image/jpeg"
-
-
-def _ollama_generate_vision(image_path: Path) -> str:
-    cfg = _glm_cfg()
-    host = str(cfg.get("host") or "127.0.0.1")
-    port = int(cfg.get("port") or 11434)
-    model = str(cfg.get("model") or "glm-ocr:latest")
-    timeout = int(cfg.get("timeout") or 900)
-    prompt = str(cfg.get("prompt") or "Text Recognition:")
-    max_side = int(cfg.get("max_image_side") or 1600)
-
-    _check_ollama(host, port)
-    raw, _mime = _prepare_image_bytes(image_path, max_side=max_side)
-    body = {
-        "model": model,
-        "prompt": prompt,
-        "images": [base64.b64encode(raw).decode("ascii")],
-        "stream": False,
-        "options": {
-            "temperature": 0,
-            "num_predict": int(cfg.get("num_predict") or 768),
-            "stop": ["```", "\n```", "```\n"],
-        },
-    }
-    req = urllib.request.Request(
-        f"http://{host}:{port}/api/generate",
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except TimeoutError as exc:
-        raise RuntimeError(
-            f"Ollama timed out after {timeout}s while reading {image_path.name}.\n"
-            "CPU OCR can be slow. Keep Ollama running and retry."
-        ) from exc
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"Ollama HTTP {exc.code}: {detail}") from exc
-
-    if payload.get("error"):
-        raise RuntimeError(f"Ollama error: {payload['error']}")
-    return str(payload.get("response") or "").strip()
+        return buf.getvalue()
 
 
 def _dedupe_ocr_text(text: str) -> str:
-    """Drop repeated full-page copies and empty markdown fences from GLM-OCR."""
     lines: list[str] = []
     for part in text.splitlines():
         part = part.strip()
         if not part:
             continue
         if set(part) <= {"`", " ", "*"}:
-            # Model often loops on ``` after finishing the page.
             if lines:
                 break
             continue
         lines.append(part)
-
     if not lines:
         return ""
-
-    # If the first content line appears again, the page was printed twice+.
     anchor = lines[0]
     for i in range(1, len(lines)):
         if lines[i] == anchor and i >= 3:
             lines = lines[:i]
             break
-
-    # Also collapse exact half-copies when lengths match.
     if len(lines) >= 4:
         half = len(lines) // 2
         first = lines[:half]
         second = lines[half : half + len(first)]
         if first and first == second:
             lines = first
-
-    # Drop consecutive duplicate lines.
     cleaned: list[str] = []
     for line in lines:
         if cleaned and cleaned[-1] == line:
@@ -183,20 +102,88 @@ def _dedupe_ocr_text(text: str) -> str:
         cleaned.append(line)
     return "\n".join(cleaned)
 
-def ocr_image(image_path: Path, output_dir: Path | None = None) -> list[str]:
-    """Run local GLM-OCR through Ollama on this laptop and return text lines."""
-    _load_dotenv()
-    text = _dedupe_ocr_text(_ollama_generate_vision(Path(image_path)))
-    lines = [part for part in text.splitlines() if part.strip()]
 
+def _post_json(url: str, body: dict, timeout: int) -> dict:
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _ensure_api(host: str, port: int) -> None:
+    try:
+        urllib.request.urlopen(f"http://{host}:{port}/v1/models", timeout=5).read()
+    except Exception as exc:
+        raise RuntimeError(
+            "LLaMA-Factory API is not running.\n"
+            "Terminal 1:  python src\\llamafactory_serve.py\n"
+            "Terminal 2:  python src\\pipeline.py data\\raw\\YourImage.png\n"
+            f"Expected API: http://{host}:{port}/v1"
+        ) from exc
+
+
+def _ocr_llamafactory(image_path: Path) -> str:
+    cfg = _cfg()
+    host = str(cfg.get("host") or "127.0.0.1")
+    port = int(cfg.get("port") or 8000)
+    model = str(cfg.get("model") or "zai-org/GLM-OCR")
+    prompt = str(cfg.get("prompt") or "Text Recognition:")
+    timeout = int(cfg.get("timeout") or 900)
+    max_side = int(cfg.get("max_image_side") or 1600)
+    max_tokens = int(cfg.get("max_tokens") or cfg.get("num_predict") or 768)
+
+    _ensure_api(host, port)
+    raw = _prepare_image_bytes(image_path, max_side=max_side)
+    data_uri = "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+    body = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+    }
+    try:
+        payload = _post_json(
+            f"http://{host}:{port}/v1/chat/completions", body, timeout=timeout
+        )
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:800]
+        raise RuntimeError(f"LLaMA-Factory HTTP {exc.code}: {detail}") from exc
+    except TimeoutError as exc:
+        raise RuntimeError(
+            f"LLaMA-Factory timed out after {timeout}s on {image_path.name}"
+        ) from exc
+
+    choices = payload.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"Empty LLaMA-Factory response: {str(payload)[:400]}")
+    msg = choices[0].get("message") or {}
+    return str(msg.get("content") or "").strip()
+
+
+def ocr_image(image_path: Path, output_dir: Path | None = None) -> list[str]:
+    """Run GLM-OCR through LLaMA-Factory API and return text lines."""
+    _load_dotenv()
+    text = _dedupe_ocr_text(_ocr_llamafactory(Path(image_path)))
+    lines = [part for part in text.splitlines() if part.strip()]
     if output_dir is not None:
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
-        (out / f"{Path(image_path).stem}_glmocr.json").write_text(
+        (out / f"{Path(image_path).stem}_ocr.json").write_text(
             json.dumps(
                 {
-                    "backend": "glm-ocr-local",
-                    "model": (_glm_cfg().get("model") or "glm-ocr:latest"),
+                    "backend": "llamafactory",
                     "text": text,
                     "lines": lines,
                 },
