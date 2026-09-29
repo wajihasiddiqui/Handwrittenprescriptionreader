@@ -1,8 +1,11 @@
 @echo off
-REM Start LLaMA-Factory API for GLM-OCR (keep this window open)
+REM Deprecated: server mode is optional now. Model loads inside pipeline.py
 setlocal
 cd /d "%~dp0.."
-echo Starting LLaMA-Factory GLM-OCR API on http://127.0.0.1:8000
-echo Keep this window open, then run pipeline in another terminal.
+echo NOTE: Server is no longer required.
+echo The model loads in-process when you run:
+echo   scripts\run_local_ocr.bat data\raw\Test1.png
+echo.
+echo If you still want the API server:
 python src\llamafactory_serve.py %*
 exit /b %ERRORLEVEL%

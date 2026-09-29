@@ -1,29 +1,12 @@
-BEGINNER GUIDE — Handwritten prescription reader (LLaMA-Factory)
+BEGINNER GUIDE — Handwritten prescription reader
 
 ============================================================
-WHAT THIS PROJECT DOES
+WHAT THIS DOES
 ============================================================
-Photo of a prescription → GLM-OCR (LLaMA-Factory) → text → drug matching.
-A HUMAN must always check the answer.
+Photo → GLM-OCR (loaded in Python) → text → drug matching.
+A human must always check the answer.
 
-Ollama is NOT used.
-
-============================================================
-WORDS
-============================================================
-OCR            = turn a photo into text
-GLM-OCR        = the OCR model
-LLaMA-Factory  = tool that serves and can fine-tune GLM-OCR
-NER            = find drug names / dose / schedule after OCR
-pipeline.py    = one command: OCR then NER
-
-============================================================
-FLOW
-============================================================
-  1. Start LLaMA-Factory API   (Terminal 1, keep open)
-  2. Run pipeline.py           (Terminal 2)
-  3. Check output\ files
-  4. Pharmacist / doctor reviews
+No Ollama. No separate OCR server needed.
 
 ============================================================
 SETUP (ONCE)
@@ -33,25 +16,21 @@ SETUP (ONCE)
   .\.venv\Scripts\activate
   python -m pip install --upgrade pip
   .\.venv\Scripts\pip.exe install pillow requests rapidfuzz spacy pyyaml
+
   python src\llamafactory_train.py setup
 
 ============================================================
-RUN
+RUN (ONE COMMAND)
 ============================================================
-Terminal 1:
-  python src\llamafactory_serve.py
+  .\.venv_finetune\Scripts\python.exe src\pipeline.py data\raw\Test1.png
 
-Terminal 2:
-  .\.venv\Scripts\python.exe src\pipeline.py data\raw\Test1.png
+Or:
+  .\scripts\run_local_ocr.bat data\raw\Test1.png
 
-Check:
-  .\scripts\check_local_ocr.bat
+First run loads the model (can take several minutes).
+You should see: --- OCR (llamafactory-inprocess) ---
 
 ============================================================
-FINE-TUNE (GPU MACHINE)
+FINE-TUNE (GPU)
 ============================================================
 See finetune_glm\README.md
-
-  python src\llamafactory_train.py prepare
-  python src\llamafactory_train.py train --mode lora
-  python src\llamafactory_train.py export

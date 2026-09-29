@@ -1,4 +1,4 @@
-"""End-to-end prescription pipeline: OCR (LLaMA-Factory GLM-OCR) then NER."""
+"""End-to-end prescription pipeline: in-process GLM-OCR (LLaMA-Factory) then NER."""
 
 from __future__ import annotations
 

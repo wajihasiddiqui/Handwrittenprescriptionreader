@@ -1,31 +1,24 @@
 @echo off
-REM Check LLaMA-Factory OCR setup (no Ollama)
+REM Check in-process LLaMA-Factory OCR setup (no server)
 setlocal
 cd /d "%~dp0.."
 
-echo === Finetune venv / LLaMA-Factory ===
-if not exist ".venv_finetune\Scripts\python.exe" (
-  echo Missing .venv_finetune
-  echo Run: python src\llamafactory_train.py setup
+echo === LLaMA-Factory install ===
+if exist ".venv_finetune\Scripts\python.exe" (
+  set "PY=.venv_finetune\Scripts\python.exe"
+) else (
+  set "PY=.\.venv\Scripts\python.exe"
+)
+
+"%PY%" -c "import sys; sys.path.insert(0,'src'); from ocr_engine import _ensure_llamafactory_importable, get_backend; _ensure_llamafactory_importable(); print('backend', get_backend()); print('LLaMA-Factory import OK')"
+if errorlevel 1 (
+  echo.
+  echo Run setup first:
+  echo   python src\llamafactory_train.py setup
   exit /b 1
 )
-if not exist "third_party\LLaMA-Factory" (
-  echo Missing third_party\LLaMA-Factory
-  echo Run: python src\llamafactory_train.py setup
-  exit /b 1
-)
-echo OK: LLaMA-Factory present
 
 echo.
-echo === API http://127.0.0.1:8000/v1/models ===
-powershell -NoProfile -Command "try { (Invoke-RestMethod http://127.0.0.1:8000/v1/models) | Out-String; exit 0 } catch { Write-Host 'API not running'; Write-Host 'Start: python src\llamafactory_serve.py'; exit 1 }"
-if errorlevel 1 exit /b 1
-
-echo.
-echo === Project OCR backend ===
-".\.venv\Scripts\python.exe" -c "import sys; sys.path.insert(0,'src'); from ocr_engine import get_backend; print('backend', get_backend())"
-
-echo.
-echo Setup OK. Run pipeline in another terminal while API stays open:
-echo   .\.venv\Scripts\python.exe src\pipeline.py data\raw\YourImage.png
+echo Setup OK. Single command run:
+echo   %PY% src\pipeline.py data\raw\YourImage.png
 exit /b 0

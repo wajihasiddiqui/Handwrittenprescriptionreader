@@ -1,3 +1,13 @@
-image,text
-rx001.png,"Tab Ascard 75mg once daily"
-rx002.png,"Tab Sinemet 125mg BID"
+image,text,task
+Test1.png,"DOW UNIVERSITY HOSPITAL
+DOW OPD BLOCK
+PRESCRIPTION
+Patient Name: Raheen Saeed
+Tab Ascard 75mg OD
+Syp Acefyl 2+2+2
+Panadol SOS",text
+Test3.png,"Tab Ascard 75mg OD
+Tab Movaban 2.5mg 1+0+1
+Tab Sinemet BID
+Tab Amantadine 100mg 1+0+1
+Inj Lantus 6 unit SC OD",text

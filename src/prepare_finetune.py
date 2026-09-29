@@ -1,185 +1,283 @@
-"""Crop labeled lines from real prescriptions and build a PaddleX rec dataset."""
+"""Prepare ShareGPT multimodal data for GLM-OCR fine-tuning (LLaMA-Factory).
+
+Usage:
+  python src\\prepare_finetune.py
+  python src\\prepare_finetune.py --labels data\\glm_finetune\\labels.csv
+
+Input (default):
+  data/glm_finetune/labels.csv     columns: image,text[,task]
+  data/glm_finetune/images/        image files referenced by labels.csv
+
+Output:
+  data/glm_finetune/prescriptions.json          ShareGPT JSON
+  data/glm_finetune/prescription_images/        copied images
+  third_party/LLaMA-Factory/data/...           synced when present
+
+ShareGPT sample shape (required by LLaMA-Factory + template glm_ocr):
+  {
+    "messages": [
+      {"role": "user", "content": "<image>Text Recognition:"},
+      {"role": "assistant", "content": "Tab Ascard 75mg OD"}
+    ],
+    "images": ["prescription_images/00001_rx.png"]
+  }
+
+Then train:
+  python src\\llamafactory_train.py train --mode lora
+"""
 
 from __future__ import annotations
 
-import random
+import argparse
+import csv
+import json
+import shutil
 import sys
 from pathlib import Path
 
-import cv2
-import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DIR = ROOT / "data" / "glm_finetune"
+DEFAULT_IMAGES = DEFAULT_DIR / "images"
+DEFAULT_LABELS = DEFAULT_DIR / "labels.csv"
+DEFAULT_OUT_JSON = DEFAULT_DIR / "prescriptions.json"
+DEFAULT_OUT_IMAGES = DEFAULT_DIR / "prescription_images"
+DATASET_SNIPPET = ROOT / "finetune_glm" / "dataset_info.snippet.json"
+LLAMA_DATA = ROOT / "third_party" / "LLaMA-Factory" / "data"
 
-SRC = Path(__file__).resolve().parent
-ROOT = SRC.parent
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
-from ocr_engine import get_ocr
-
-RAW = ROOT / "data" / "raw"
-OUT = ROOT / "data" / "finetune"
-IMAGES = OUT / "images"
-DICT_SRC = Path.home() / ".paddlex" / "official_models" / "PP-OCRv5_mobile_rec" / "inference.yml"
-
-# Do not train on leftover OCR garbage from this page.
-SKIP_LABELS = {
-    "n",
-    "1",
-    "2",
-    "do",
-    "ft",
-    "Aar.",
-    "tahs.",
-    "Fovw op w o E eamnèd",
-    "△=Awe rnai",
-    "o.d KDA Se",
-}
-
-# Correct OCR mistakes on Test1.png (ground truth for this page only).
-LABEL_FIX = {
-    "Patient Nae": "Patient Name",
-    "Raen Soeed": "Raheen Saeed",
-    "Medical Recond Number": "Medical Record Number",
-    "Altrgiies": "Allergies",
-    "Weighl": "Weight",
-    "Dote": "Date",
-    "23yo merened": "23 y/o M",
-    "fonadol": "Panadol",
-    "cougn": "cough",
-    "syp ce225": "Syp Acefyl",
-    "cBe": "CBC",
-    "MpiCT": "MP/ICT",
-    "sevev.": "fever",
-    "raigoox1": "Vigix 0+0+1",
-    "2+2+2": "2+2+2",
-    "Tab": "Tab",
-    "Rx": "Rx",
-    "PRESCRIPTION": "PRESCRIPTION",
-    "DOW UNIVERSITY HOSPITAL": "DOW UNIVERSITY HOSPITAL",
-    "DOW OPD BLOCK": "DOW OPD BLOCK",
-    "Diagnosis": "Diagnosis",
-    "Age": "Age",
-    "115596724": "115596724",
-    "AsAD": "ASCARD",
-    "Pp(VABPN":    "APIXABAN",
-    "SInn":         "SINAMET",
-    "An AuDI NEs":  "AMANTADINE",
-    "LA-TUs":    "LANTUS",
-    "Tvaudet":   "Tramadol",    
+TASK_PROMPTS = {
+    "text": "Text Recognition:",
+    "table": "Table Recognition:",
+    "formula": "Formula Recognition:",
 }
 
 
-def load_official_dict() -> list[str]:
-    import yaml
-
-    data = yaml.safe_load(DICT_SRC.read_text(encoding="utf-8"))
-    chars = data["PostProcess"]["character_dict"]
-    return [str(c) for c in chars]
-
-
-def fix_label(text: str) -> str:
-    t = text.strip()
-    if t in LABEL_FIX:
-        return LABEL_FIX[t]
-    key = t.rstrip(".")
-    return LABEL_FIX.get(key, t)
+def _task_prompt(task: str) -> str:
+    key = (task or "text").strip().lower()
+    if key not in TASK_PROMPTS:
+        raise SystemExit(f"Unknown task {task!r}. Use: {', '.join(TASK_PROMPTS)}")
+    return TASK_PROMPTS[key]
 
 
-def augment(img: Image.Image, rng: random.Random) -> Image.Image:
-    out = img
-    if rng.random() < 0.7:
-        out = out.rotate(rng.uniform(-6, 6), expand=True, fillcolor=(255, 255, 255))
-    if rng.random() < 0.5:
-        out = ImageEnhance.Contrast(out).enhance(rng.uniform(0.8, 1.25))
-    if rng.random() < 0.5:
-        out = ImageEnhance.Brightness(out).enhance(rng.uniform(0.85, 1.15))
-    if rng.random() < 0.4:
-        out = out.filter(ImageFilter.GaussianBlur(radius=rng.uniform(0.2, 0.8)))
-    return out
+def _read_labels(path: Path) -> list[tuple[str, str, str]]:
+    if not path.exists():
+        example = DEFAULT_DIR / "labels.example.csv"
+        raise SystemExit(
+            f"Missing {path}\n"
+            f"Copy example and edit:\n"
+            f"  copy {example.relative_to(ROOT)} data\\glm_finetune\\labels.csv"
+        )
 
+    rows: list[tuple[str, str, str]] = []
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            raise SystemExit("labels.csv is empty or has no header")
+        fields = {str(x).strip().lower(): str(x) for x in reader.fieldnames}
+        if "image" not in fields or "text" not in fields:
+            raise SystemExit("labels.csv must have columns: image,text[,task]")
+        img_key = fields["image"]
+        txt_key = fields["text"]
+        task_key = fields.get("task")
 
-def crop_boxes(image_bgr: np.ndarray, boxes) -> list[np.ndarray]:
-    crops = []
-    h, w = image_bgr.shape[:2]
-    for box in boxes:
-        arr = np.array(box).reshape(-1, 2)
-        x1, y1 = np.clip(arr.min(axis=0), 0, [w - 1, h - 1]).astype(int)
-        x2, y2 = np.clip(arr.max(axis=0), 0, [w, h]).astype(int)
-        if x2 - x1 < 8 or y2 - y1 < 8:
-            continue
-        crops.append(image_bgr[y1:y2, x1:x2])
-    return crops
-
-
-def main() -> None:
-    IMAGES.mkdir(parents=True, exist_ok=True)
-    photos = list(RAW.glob("*.png")) + list(RAW.glob("*.jpg")) + list(RAW.glob("*.jpeg"))
-    photos = [p for p in photos if p.name.upper() != "PUT_PHOTOS_HERE.TXT"]
-    if not photos:
-        raise SystemExit("No images in data/raw")
-
-    ocr = get_ocr()
-    samples: list[tuple[str, str]] = []
-    rng = random.Random(7)
-    idx = 0
-
-    for photo in photos:
-        image = cv2.imread(str(photo))
-        if image is None:
-            continue
-        result = ocr.predict(str(photo))
-        for res in result:
-            data = res if isinstance(res, dict) else getattr(res, "json", None) or {}
-            texts = list(data.get("rec_texts") or [])
-            polys = data.get("rec_polys") or data.get("dt_polys")
-            if not texts or polys is None:
+        for i, row in enumerate(reader, start=2):
+            image = str(row.get(img_key) or "").strip()
+            text = str(row.get(txt_key) or "").strip()
+            task = str(row.get(task_key) or "text").strip() if task_key else "text"
+            if not image and not text:
                 continue
-            crops_and_labels = []
-            for box, raw in zip(polys, texts):
-                h, w = image.shape[:2]
-                arr = np.array(box).reshape(-1, 2)
-                x1, y1 = np.clip(arr.min(axis=0), 0, [w - 1, h - 1]).astype(int)
-                x2, y2 = np.clip(arr.max(axis=0), 0, [w, h]).astype(int)
-                if x2 - x1 < 8 or y2 - y1 < 8:
-                    continue
-                crops_and_labels.append((image[y1:y2, x1:x2], raw))
-            for crop, raw in crops_and_labels:
-                label = fix_label(raw)
-                if not label or label.startswith("(") or label in SKIP_LABELS or len(label) < 2:
-                    continue
-                rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-                base = Image.fromarray(rgb)
-                versions = [base] + [augment(base, rng) for _ in range(8)]
-                for ver in versions:
-                    name = f"rec_{idx:05d}.png"
-                    ver.save(IMAGES / name)
-                    samples.append((f"images/{name}", label))
-                    idx += 1
+            if image.startswith("example_"):
+                continue
+            if not image or not text:
+                raise SystemExit(f"Row {i}: both image and text are required")
+            rows.append((image, text, task or "text"))
 
-    if len(samples) < 4:
-        raise SystemExit(f"Not enough crops: {len(samples)}")
+    if not rows:
+        raise SystemExit("labels.csv has no data rows")
+    return rows
 
-    rng.shuffle(samples)
-    val_n = max(2, len(samples) // 10)
-    val = samples[:val_n]
-    train = samples[val_n:]
 
-    def write_list(path: Path, rows: list[tuple[str, str]]) -> None:
-        path.write_text("\n".join(f"{p}\t{t}" for p, t in rows), encoding="utf-8")
+def _resolve_image(name: str, images_dir: Path) -> Path:
+    candidate = Path(name)
+    if candidate.is_file():
+        return candidate
+    if candidate.is_absolute() and candidate.exists():
+        return candidate
+    under = images_dir / name
+    if under.is_file():
+        return under
+    under2 = images_dir / Path(name).name
+    if under2.is_file():
+        return under2
+    # also allow data/raw/
+    raw = ROOT / "data" / "raw" / Path(name).name
+    if raw.is_file():
+        return raw
+    raise FileNotFoundError(name)
 
-    write_list(OUT / "train.txt", train)
-    write_list(OUT / "val.txt", val)
 
-    dict_path = OUT / "dict.txt"
-    if DICT_SRC.exists():
-        dict_path.write_text("\n".join(load_official_dict()), encoding="utf-8")
-    else:
-        chars = sorted({ch for _, lab in samples for ch in lab})
-        dict_path.write_text("\n".join(chars), encoding="utf-8")
+def build_sharegpt_samples(
+    rows: list[tuple[str, str, str]],
+    images_dir: Path,
+    out_images_dir: Path,
+) -> list[dict]:
+    out_images_dir.mkdir(parents=True, exist_ok=True)
+    samples: list[dict] = []
+    missing: list[str] = []
 
-    print(f"train={len(train)} val={len(val)} -> {OUT}")
+    for idx, (image_name, text, task) in enumerate(rows, start=1):
+        try:
+            src = _resolve_image(image_name, images_dir)
+        except FileNotFoundError:
+            missing.append(image_name)
+            continue
+
+        dest_name = f"{idx:05d}_{src.name}"
+        dest = out_images_dir / dest_name
+        if not dest.exists() or dest.stat().st_mtime < src.stat().st_mtime:
+            shutil.copy2(src, dest)
+
+        # Path must be relative to LLaMA-Factory/data/ after sync
+        rel = f"prescription_images/{dest_name}"
+        prompt = _task_prompt(task)
+        assistant_text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        samples.append(
+            {
+                "messages": [
+                    {"role": "user", "content": f"<image>{prompt}"},
+                    {"role": "assistant", "content": assistant_text},
+                ],
+                "images": [rel],
+            }
+        )
+
+    if missing:
+        preview = "\n  - ".join(missing[:20])
+        more = f"\n  ... and {len(missing) - 20} more" if len(missing) > 20 else ""
+        raise SystemExit(
+            "Missing image files (put them under data/glm_finetune/images/ or data/raw/):\n"
+            f"  - {preview}{more}"
+        )
+    if not samples:
+        raise SystemExit("No ShareGPT samples built")
+    return samples
+
+
+def validate_sharegpt(samples: list[dict]) -> None:
+    for i, sample in enumerate(samples, start=1):
+        if "messages" not in sample or "images" not in sample:
+            raise SystemExit(f"Sample {i}: missing messages/images")
+        msgs = sample["messages"]
+        if len(msgs) < 2:
+            raise SystemExit(f"Sample {i}: need user + assistant messages")
+        if msgs[0].get("role") != "user" or msgs[1].get("role") != "assistant":
+            raise SystemExit(f"Sample {i}: roles must be user then assistant")
+        content = str(msgs[0].get("content") or "")
+        if "<image>" not in content:
+            raise SystemExit(f"Sample {i}: user content must include <image>")
+        images = sample["images"]
+        if not isinstance(images, list) or len(images) != content.count("<image>"):
+            raise SystemExit(
+                f"Sample {i}: <image> count must match images list length"
+            )
+        if not str(msgs[1].get("content") or "").strip():
+            raise SystemExit(f"Sample {i}: assistant text is empty")
+
+
+def _merge_dataset_info(target: Path) -> None:
+    snippet = json.loads(DATASET_SNIPPET.read_text(encoding="utf-8"))
+    info = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+    info.update(snippet)
+    target.write_text(json.dumps(info, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def sync_to_llama_factory(samples: list[dict], out_images_dir: Path) -> None:
+    if not LLAMA_DATA.exists():
+        print(f"LLaMA-Factory data dir not found yet: {LLAMA_DATA}")
+        print("Run: python src\\llamafactory_train.py setup")
+        print("Dataset JSON is still ready locally for later sync.")
+        return
+
+    img_dest = LLAMA_DATA / "prescription_images"
+    if img_dest.exists():
+        shutil.rmtree(img_dest)
+    shutil.copytree(out_images_dir, img_dest)
+
+    (LLAMA_DATA / "prescriptions.json").write_text(
+        json.dumps(samples, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    _merge_dataset_info(LLAMA_DATA / "dataset_info.json")
+    print(f"Synced {len(samples)} samples → {LLAMA_DATA}")
+    print("Registered LLaMA-Factory dataset name: prescriptions")
+
+
+def write_dataset_card(out_dir: Path, n: int) -> None:
+    card = out_dir / "DATASET.md"
+    card.write_text(
+        "\n".join(
+            [
+                "# GLM-OCR ShareGPT dataset",
+                "",
+                f"- samples: {n}",
+                "- file: prescriptions.json",
+                "- images: prescription_images/",
+                "- LLaMA-Factory dataset key: prescriptions",
+                "- template: glm_ocr",
+                "",
+                "Train:",
+                "  python src/llamafactory_train.py train --mode lora",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        description="Build ShareGPT dataset for GLM-OCR / LLaMA-Factory training"
+    )
+    parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS)
+    parser.add_argument("--images-dir", type=Path, default=DEFAULT_IMAGES)
+    parser.add_argument("--out-json", type=Path, default=DEFAULT_OUT_JSON)
+    parser.add_argument("--out-images", type=Path, default=DEFAULT_OUT_IMAGES)
+    parser.add_argument(
+        "--no-sync",
+        action="store_true",
+        help="Do not copy into third_party/LLaMA-Factory/data",
+    )
+    args = parser.parse_args(argv)
+
+    args.images_dir.mkdir(parents=True, exist_ok=True)
+    args.out_images.parent.mkdir(parents=True, exist_ok=True)
+
+    rows = _read_labels(args.labels)
+    samples = build_sharegpt_samples(rows, args.images_dir, args.out_images)
+    validate_sharegpt(samples)
+
+    args.out_json.write_text(
+        json.dumps(samples, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    write_dataset_card(args.out_json.parent, len(samples))
+
+    print(f"ShareGPT samples: {len(samples)}")
+    print(f"JSON:   {args.out_json}")
+    print(f"Images: {args.out_images}")
+    print("Example sample:")
+    print(json.dumps(samples[0], indent=2, ensure_ascii=False))
+
+    if not args.no_sync:
+        sync_to_llama_factory(samples, args.out_images)
+
+    print("\nNext:")
+    print("  python src\\llamafactory_train.py setup")
+    print("  python src\\llamafactory_train.py train --mode lora")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:  # noqa: BLE001
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)

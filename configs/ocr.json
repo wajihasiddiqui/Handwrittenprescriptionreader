@@ -1,12 +1,13 @@
 {
-  "backend": "llamafactory",
+  "backend": "llamafactory-inprocess",
   "llamafactory": {
-    "host": "127.0.0.1",
-    "port": 8000,
     "model": "zai-org/GLM-OCR",
+    "template": "glm_ocr",
+    "infer_backend": "huggingface",
     "prompt": "Text Recognition:",
-    "timeout": 900,
     "max_image_side": 1600,
-    "max_tokens": 768
+    "max_tokens": 768,
+    "adapter": "",
+    "finetuning_type": "lora"
   }
 }

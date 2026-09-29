@@ -1,18 +1,18 @@
-"""GLM-OCR via LLaMA-Factory OpenAI-compatible API only."""
+"""GLM-OCR in-process via LLaMA-Factory ChatModel (no API server)."""
 
 from __future__ import annotations
 
-import base64
 import json
 import os
-import urllib.error
-import urllib.request
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "configs" / "ocr.json"
+LLAMA_SRC = ROOT / "third_party" / "LLaMA-Factory" / "src"
 
 _OCR_CFG: dict | None = None
+_CHAT_MODEL = None
 
 
 def _load_dotenv() -> None:
@@ -41,34 +41,53 @@ def load_ocr_config() -> dict:
 
 
 def get_backend() -> str:
-    return "llamafactory"
+    return "llamafactory-inprocess"
 
 
 def last_backend() -> str:
-    return "llamafactory"
+    return "llamafactory-inprocess"
 
 
 def _cfg() -> dict:
-    return load_ocr_config().get("llamafactory") or load_ocr_config().get("glm_ocr") or {}
+    return load_ocr_config().get("llamafactory") or {}
 
 
-def _prepare_image_bytes(image_path: Path, max_side: int = 1600) -> bytes:
-    import io
+def _ensure_llamafactory_importable() -> None:
+    try:
+        import llamafactory  # noqa: F401
 
+        return
+    except ImportError:
+        pass
+    if LLAMA_SRC.exists() and str(LLAMA_SRC) not in sys.path:
+        sys.path.insert(0, str(LLAMA_SRC))
+    try:
+        import llamafactory  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            "LLaMA-Factory is not installed in this Python environment.\n"
+            "Run once:\n"
+            "  python src\\llamafactory_train.py setup\n"
+            "Then either:\n"
+            "  .\\.venv_finetune\\Scripts\\python.exe src\\pipeline.py data\\raw\\Test1.png\n"
+            "or install into your active venv:\n"
+            "  pip install -e third_party\\LLaMA-Factory\n"
+            "  pip install -U \"transformers>=5.3.0\" torch torchvision pillow"
+        ) from exc
+
+
+def _prepare_image(image_path: Path, max_side: int = 1600):
     from PIL import Image
 
-    with Image.open(image_path) as img:
-        img = img.convert("RGB")
-        w, h = img.size
-        scale = min(1.0, float(max_side) / float(max(w, h)))
-        if scale < 1.0:
-            img = img.resize(
-                (max(1, int(w * scale)), max(1, int(h * scale))),
-                Image.Resampling.LANCZOS,
-            )
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
-        return buf.getvalue()
+    img = Image.open(image_path).convert("RGB")
+    w, h = img.size
+    scale = min(1.0, float(max_side) / float(max(w, h)))
+    if scale < 1.0:
+        img = img.resize(
+            (max(1, int(w * scale)), max(1, int(h * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    return img
 
 
 def _dedupe_ocr_text(text: str) -> str:
@@ -103,79 +122,71 @@ def _dedupe_ocr_text(text: str) -> str:
     return "\n".join(cleaned)
 
 
-def _post_json(url: str, body: dict, timeout: int) -> dict:
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+def get_chat_model():
+    """Load GLM-OCR once and reuse it for later images."""
+    global _CHAT_MODEL
+    if _CHAT_MODEL is not None:
+        return _CHAT_MODEL
 
+    _load_dotenv()
+    _ensure_llamafactory_importable()
+    from llamafactory.chat import ChatModel
 
-def _ensure_api(host: str, port: int) -> None:
-    try:
-        urllib.request.urlopen(f"http://{host}:{port}/v1/models", timeout=5).read()
-    except Exception as exc:
-        raise RuntimeError(
-            "LLaMA-Factory API is not running.\n"
-            "Terminal 1:  python src\\llamafactory_serve.py\n"
-            "Terminal 2:  python src\\pipeline.py data\\raw\\YourImage.png\n"
-            f"Expected API: http://{host}:{port}/v1"
-        ) from exc
-
-
-def _ocr_llamafactory(image_path: Path) -> str:
     cfg = _cfg()
-    host = str(cfg.get("host") or "127.0.0.1")
-    port = int(cfg.get("port") or 8000)
-    model = str(cfg.get("model") or "zai-org/GLM-OCR")
-    prompt = str(cfg.get("prompt") or "Text Recognition:")
-    timeout = int(cfg.get("timeout") or 900)
-    max_side = int(cfg.get("max_image_side") or 1600)
-    max_tokens = int(cfg.get("max_tokens") or cfg.get("num_predict") or 768)
+    model_path = str(cfg.get("model") or "zai-org/GLM-OCR")
+    # Prefer local merged fine-tune if present.
+    local_ft = ROOT / "models" / "glm-ocr-finetuned"
+    if local_ft.exists() and any(local_ft.iterdir()):
+        model_path = str(local_ft)
 
-    _ensure_api(host, port)
-    raw = _prepare_image_bytes(image_path, max_side=max_side)
-    data_uri = "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
-    body = {
-        "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": data_uri}},
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ],
-        "temperature": 0,
-        "max_tokens": max_tokens,
+    args: dict = {
+        "model_name_or_path": model_path,
+        "template": str(cfg.get("template") or "glm_ocr"),
+        "infer_backend": str(cfg.get("infer_backend") or "huggingface"),
+        "trust_remote_code": True,
     }
-    try:
-        payload = _post_json(
-            f"http://{host}:{port}/v1/chat/completions", body, timeout=timeout
-        )
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:800]
-        raise RuntimeError(f"LLaMA-Factory HTTP {exc.code}: {detail}") from exc
-    except TimeoutError as exc:
-        raise RuntimeError(
-            f"LLaMA-Factory timed out after {timeout}s on {image_path.name}"
-        ) from exc
+    adapter = str(cfg.get("adapter") or "").strip()
+    if adapter:
+        adapter_path = Path(adapter)
+        if not adapter_path.is_absolute():
+            adapter_path = ROOT / adapter_path
+        args["adapter_name_or_path"] = str(adapter_path)
+        args["finetuning_type"] = str(cfg.get("finetuning_type") or "lora")
 
-    choices = payload.get("choices") or []
-    if not choices:
-        raise RuntimeError(f"Empty LLaMA-Factory response: {str(payload)[:400]}")
-    msg = choices[0].get("message") or {}
-    return str(msg.get("content") or "").strip()
+    print(f"Loading GLM-OCR in-process: {args['model_name_or_path']} ...")
+    _CHAT_MODEL = ChatModel(args)
+    print("GLM-OCR ready.")
+    return _CHAT_MODEL
+
+
+def _ocr_inprocess(image_path: Path) -> str:
+    cfg = _cfg()
+    prompt = str(cfg.get("prompt") or "Text Recognition:")
+    max_side = int(cfg.get("max_image_side") or 1600)
+    max_tokens = int(cfg.get("max_tokens") or 768)
+
+    chat_model = get_chat_model()
+    image = _prepare_image(Path(image_path), max_side=max_side)
+    messages = [{"role": "user", "content": f"<image>{prompt}"}]
+    responses = chat_model.chat(
+        messages,
+        images=[image],
+        temperature=0.0,
+        do_sample=False,
+        max_new_tokens=max_tokens,
+    )
+    if not responses:
+        return ""
+    first = responses[0]
+    text = getattr(first, "response_text", None)
+    if text is None and isinstance(first, dict):
+        text = first.get("response_text") or first.get("text")
+    return str(text or "").strip()
 
 
 def ocr_image(image_path: Path, output_dir: Path | None = None) -> list[str]:
-    """Run GLM-OCR through LLaMA-Factory API and return text lines."""
-    _load_dotenv()
-    text = _dedupe_ocr_text(_ocr_llamafactory(Path(image_path)))
+    """Load GLM-OCR in this process and OCR one image (no server)."""
+    text = _dedupe_ocr_text(_ocr_inprocess(Path(image_path)))
     lines = [part for part in text.splitlines() if part.strip()]
     if output_dir is not None:
         out = Path(output_dir)
@@ -183,7 +194,7 @@ def ocr_image(image_path: Path, output_dir: Path | None = None) -> list[str]:
         (out / f"{Path(image_path).stem}_ocr.json").write_text(
             json.dumps(
                 {
-                    "backend": "llamafactory",
+                    "backend": "llamafactory-inprocess",
                     "text": text,
                     "lines": lines,
                 },

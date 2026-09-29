@@ -94,9 +94,9 @@ def cmd_setup(_: argparse.Namespace) -> None:
 
 
 def cmd_prepare(_: argparse.Namespace) -> None:
-    from prepare_glm_finetune import main as prepare_main
+    from prepare_finetune import main as prepare_main
 
-    prepare_main()
+    prepare_main([])
 
 
 def cmd_train(args: argparse.Namespace) -> None:
@@ -110,10 +110,10 @@ def cmd_train(args: argparse.Namespace) -> None:
     if not vpy.exists():
         raise SystemExit(f"Missing finetune venv python: {vpy}\nRun setup first.")
 
-    # Always refresh dataset into LLaMA-Factory/data
-    from prepare_glm_finetune import main as prepare_main
+    # Always refresh ShareGPT dataset into LLaMA-Factory/data
+    from prepare_finetune import main as prepare_main
 
-    prepare_main()
+    prepare_main([])
 
     dest_cfg = LLAMA_DIR / f"glm_ocr_{mode}_prescriptions.yaml"
     shutil.copy2(cfg, dest_cfg)
