@@ -67,33 +67,107 @@ def _count_sharegpt_samples() -> int:
         return 0
 
 
-def _write_train_yaml(src_cfg: Path, dest_cfg: Path, n_samples: int) -> None:
-    """Copy train yaml and disable val split when the dataset is tiny."""
-    text = src_cfg.read_text(encoding="utf-8")
-    if n_samples < 10:
-        # Avoid empty train/eval splits on tiny prescription sets
-        lines: list[str] = []
-        for line in text.splitlines():
-            stripped = line.strip()
+def _cuda_available(vpy: Path) -> bool:
+    try:
+        probe = subprocess.check_output(
+            [str(vpy), "-c", "import torch; print(int(torch.cuda.is_available()))"],
+            text=True,
+        ).strip()
+        return probe == "1"
+    except Exception:
+        return False
+
+
+def _write_train_yaml(
+    src_cfg: Path,
+    dest_cfg: Path,
+    n_samples: int,
+    *,
+    use_cpu: bool = False,
+) -> None:
+    """Copy train yaml; adapt for tiny datasets and CPU-only machines."""
+    lines: list[str] = []
+    seen_use_cpu = False
+    for line in src_cfg.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if n_samples < 10:
             if stripped.startswith("val_size:"):
                 lines.append("val_size: 0.0")
-            elif stripped.startswith("eval_strategy:"):
-                lines.append('eval_strategy: "no"')
-            elif stripped.startswith("eval_steps:"):
                 continue
-            else:
-                lines.append(line)
-        text = "\n".join(lines) + "\n"
+            if stripped.startswith("eval_strategy:"):
+                lines.append('eval_strategy: "no"')
+                continue
+            if stripped.startswith("eval_steps:"):
+                continue
+        if use_cpu:
+            if stripped.startswith("bf16:"):
+                lines.append("bf16: false")
+                continue
+            if stripped.startswith("fp16:"):
+                lines.append("fp16: false")
+                continue
+            if stripped.startswith("use_cpu:"):
+                lines.append("use_cpu: true")
+                seen_use_cpu = True
+                continue
+            if stripped.startswith("preprocessing_num_workers:"):
+                lines.append("preprocessing_num_workers: 0")
+                continue
+            if stripped.startswith("dataloader_num_workers:"):
+                lines.append("dataloader_num_workers: 0")
+                continue
+            if stripped.startswith("gradient_accumulation_steps:"):
+                # Smaller effective batch on CPU to reduce RAM pressure
+                lines.append("gradient_accumulation_steps: 2")
+                continue
+            if stripped.startswith("num_train_epochs:"):
+                lines.append("num_train_epochs: 1")
+                continue
+        lines.append(line)
+
+    if use_cpu and not seen_use_cpu:
+        # Insert near train section
+        out: list[str] = []
+        inserted = False
+        for line in lines:
+            out.append(line)
+            if not inserted and line.strip().startswith("bf16:"):
+                out.append("use_cpu: true")
+                inserted = True
+        if not inserted:
+            out.append("use_cpu: true")
+        lines = out
+
+    dest_cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if n_samples < 10:
         print(f"Small dataset ({n_samples} samples): val_size=0, eval disabled")
-    dest_cfg.write_text(text, encoding="utf-8")
+    if use_cpu:
+        print("CPU mode: bf16=false, use_cpu=true, epochs=1 (very slow)")
 
 
-def cmd_setup(_: argparse.Namespace) -> None:
+def cmd_setup(args: argparse.Namespace) -> None:
     py = sys.executable
     if not VENV_DIR.exists():
         _run([py, "-m", "venv", str(VENV_DIR)])
     vpy = _venv_python()
     _run([str(vpy), "-m", "pip", "install", "-U", "pip", "setuptools", "wheel"])
+
+    # Install CUDA PyTorch first (default pip torch is often CPU-only on Windows)
+    cuda_index = str(getattr(args, "torch_index", None) or "https://download.pytorch.org/whl/cu124")
+    print(f"Installing CUDA PyTorch from {cuda_index} ...")
+    _run(
+        [
+            str(vpy),
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "torch",
+            "torchvision",
+            "--index-url",
+            cuda_index,
+        ]
+    )
     _run([str(vpy), "-m", "pip", "install", "-r", str(REQ)])
 
     LLAMA_DIR.parent.mkdir(parents=True, exist_ok=True)
@@ -121,16 +195,73 @@ def cmd_setup(_: argparse.Namespace) -> None:
         [
             str(vpy),
             "-c",
-            "import torch; print('cuda', torch.cuda.is_available()); "
+            "import torch; print('torch', torch.__version__); "
+            "print('cuda', torch.cuda.is_available()); "
             "print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no-gpu')",
         ]
     )
+    if not _cuda_available(vpy):
+        print("\nWARNING: torch.cuda.is_available() is False.")
+        print("  1) Confirm NVIDIA driver: nvidia-smi")
+        print("  2) Reinstall CUDA torch:")
+        print("     python src\\llamafactory_train.py fix-torch")
     print("\nSetup OK.")
     print("Next:")
     print("  1. Put images in data\\glm_finetune\\images\\")
     print("  2. Fill data\\glm_finetune\\labels.csv  (image,text,task)")
     print("  3. python src\\llamafactory_train.py prepare")
     print("  4. python src\\llamafactory_train.py train --mode lora")
+
+
+def cmd_fix_torch(args: argparse.Namespace) -> None:
+    """Reinstall CUDA-enabled PyTorch into .venv_finetune."""
+    vpy = _venv_python()
+    if not vpy.exists():
+        raise SystemExit("Missing .venv_finetune. Run: python src\\llamafactory_train.py setup")
+    cuda_index = str(args.torch_index or "https://download.pytorch.org/whl/cu124")
+    print(f"Reinstalling CUDA PyTorch from {cuda_index} ...")
+    _run(
+        [
+            str(vpy),
+            "-m",
+            "pip",
+            "uninstall",
+            "-y",
+            "torch",
+            "torchvision",
+            "torchaudio",
+        ]
+    )
+    _run(
+        [
+            str(vpy),
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "torch",
+            "torchvision",
+            "--index-url",
+            cuda_index,
+        ]
+    )
+    _run(
+        [
+            str(vpy),
+            "-c",
+            "import torch; print('torch', torch.__version__); "
+            "print('cuda', torch.cuda.is_available()); "
+            "print(torch.version.cuda); "
+            "print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no-gpu')",
+        ]
+    )
+    if not _cuda_available(vpy):
+        raise SystemExit(
+            "Still no CUDA. Check nvidia-smi, then try cu121:\n"
+            "  python src\\llamafactory_train.py fix-torch --torch-index "
+            "https://download.pytorch.org/whl/cu121"
+        )
+    print("CUDA PyTorch OK.")
 
 
 def cmd_prepare(args: argparse.Namespace) -> None:
@@ -190,24 +321,28 @@ def cmd_train(args: argparse.Namespace) -> None:
         )
 
     dest_cfg = LLAMA_DIR / f"glm_ocr_{mode}_prescriptions.yaml"
-    _write_train_yaml(cfg, dest_cfg, n)
-
-    # Warn if no CUDA (CPU train is extremely slow)
-    try:
-        probe = subprocess.check_output(
-            [str(vpy), "-c", "import torch; print(int(torch.cuda.is_available()))"],
-            text=True,
-        ).strip()
-        if probe != "1":
-            print("WARNING: CUDA not available. Training on CPU will be very slow.")
-    except Exception:
-        pass
+    has_cuda = _cuda_available(vpy)
+    force_cpu = bool(getattr(args, "cpu", False))
+    if not has_cuda and not force_cpu:
+        raise SystemExit(
+            "CUDA not available in .venv_finetune (GPU machine needs CUDA PyTorch).\n"
+            "Fix:\n"
+            "  1) nvidia-smi\n"
+            "  2) python src\\llamafactory_train.py fix-torch\n"
+            "  3) .\\.venv_finetune\\Scripts\\python.exe -c "
+            "\"import torch; print(torch.cuda.is_available())\"\n"
+            "Or force slow CPU train:  python src\\llamafactory_train.py train --cpu ..."
+        )
+    if force_cpu:
+        print("WARNING: --cpu set. Training on CPU will be extremely slow.")
+    _write_train_yaml(cfg, dest_cfg, n, use_cpu=force_cpu or not has_cuda)
 
     cli = _venv_cli()
     env = {
         "DISABLE_VERSION_CHECK": "1",
-        "CUDA_VISIBLE_DEVICES": str(args.gpu),
     }
+    if has_cuda and not force_cpu:
+        env["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
     if cli.exists():
         cmd = [str(cli), "train", str(dest_cfg)]
     else:
@@ -309,7 +444,20 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_setup = sub.add_parser("setup", help="Create venv + clone/install LLaMA-Factory")
+    p_setup.add_argument(
+        "--torch-index",
+        default="https://download.pytorch.org/whl/cu124",
+        help="PyTorch wheel index (default: cu124)",
+    )
     p_setup.set_defaults(func=cmd_setup)
+
+    p_fix = sub.add_parser("fix-torch", help="Reinstall CUDA PyTorch into .venv_finetune")
+    p_fix.add_argument(
+        "--torch-index",
+        default="https://download.pytorch.org/whl/cu124",
+        help="PyTorch wheel index (default: cu124)",
+    )
+    p_fix.set_defaults(func=cmd_fix_torch)
 
     p_prep = sub.add_parser("prepare", help="Read labels.csv → ShareGPT for LLaMA-Factory")
     p_prep.add_argument(
@@ -324,6 +472,11 @@ def main() -> None:
     p_train = sub.add_parser("train", help="Train from labels.csv with LLaMA-Factory")
     p_train.add_argument("--mode", choices=["lora", "full"], default="lora")
     p_train.add_argument("--gpu", default="0", help="CUDA_VISIBLE_DEVICES value")
+    p_train.add_argument(
+        "--cpu",
+        action="store_true",
+        help="Force CPU training (bf16 off, use_cpu=true). Very slow.",
+    )
     p_train.add_argument(
         "--auto-ocr",
         action="store_true",

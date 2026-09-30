@@ -1,9 +1,11 @@
 # GPU machine only (separate from laptop OCR .venv)
-# Install CUDA torch first if needed, e.g.:
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# CUDA PyTorch is installed by:
+#   python src/llamafactory_train.py setup
+#   python src/llamafactory_train.py fix-torch
+#
+# Default index: https://download.pytorch.org/whl/cu124
+# Do NOT rely on plain `pip install torch` (often CPU-only on Windows).
 
-torch>=2.4.0
-torchvision>=0.19.0
 transformers>=5.3.0
 accelerate>=1.13.0
 peft>=0.14.0
