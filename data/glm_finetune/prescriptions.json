@@ -7,7 +7,7 @@
       },
       {
         "role": "assistant",
-        "content": "DOW UNIVERSITY HOSPITAL\r\nDOW OPD BLOCK\r\nPRESCRIPTION\r\nPatient Name: Raheen Saeed\r\nTab Ascard 75mg OD\r\nSyp Acefyl 2+2+2\r\nPanadol SOS"
+        "content": "DOW UNIVERSITY HOSPITAL\nDOW OPD BLOCK\nPRESCRIPTION\nPatient Name: Raheen Saeed\nTab Ascard 75mg OD\nSyp Acefyl 2+2+2\nPanadol SOS"
       }
     ],
     "images": [
@@ -22,7 +22,7 @@
       },
       {
         "role": "assistant",
-        "content": "Tab Ascard 75mg OD\r\nTab Movaban 2.5mg 1+0+1\r\nTab Sinemet BID\r\nTab Amantadine 100mg 1+0+1\r\nInj Lantus 6 unit SC OD"
+        "content": "Tab Ascard 75mg OD\nTab Movaban 2.5mg 1+0+1\nTab Sinemet BID\nTab Amantadine 100mg 1+0+1\nInj Lantus 6 unit SC OD"
       }
     ],
     "images": [

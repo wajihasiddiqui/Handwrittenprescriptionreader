@@ -1,7 +1,11 @@
 # Virtual environment
 .venv/
+.venv_finetune/
 venv/
 env/
+
+# LLaMA-Factory clone + training saves
+third_party/LLaMA-Factory/
 
 # Python
 __pycache__/
@@ -30,6 +34,10 @@ models/
 # Prescription photos and fine-tune crops (private + large)
 data/raw/
 data/finetune/
+data/glm_finetune/prescription_images/
+data/glm_finetune/prescriptions.json
+data/glm_finetune/labels.csv
+finetune_glm/Modelfile.generated
 
 # Regenerated RxNorm download (large; run python src\sync_rxnorm.py)
 dict/rxnorm_cache.json

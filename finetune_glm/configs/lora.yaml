@@ -10,19 +10,23 @@ lora_rank: 8
 lora_alpha: 16
 lora_dropout: 0.05
 lora_target: all
+# Keep vision encoder stable while adapting to prescription text
+freeze_vision_tower: true
+freeze_multi_modal_projector: true
 
 ### dataset
+# Built from data/glm_finetune/labels.csv by prepare_finetune.py
 dataset: prescriptions
 template: glm_ocr
 cutoff_len: 2048
-preprocessing_num_workers: 4
-dataloader_num_workers: 2
+preprocessing_num_workers: 2
+dataloader_num_workers: 0
 overwrite_cache: true
 
 ### output
 output_dir: saves/glm-ocr/lora/sft
 logging_steps: 5
-save_steps: 100
+save_steps: 50
 plot_loss: true
 overwrite_output_dir: true
 save_only_model: false
@@ -32,7 +36,7 @@ report_to: none
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 8
 learning_rate: 1.0e-4
-num_train_epochs: 3
+num_train_epochs: 5
 lr_scheduler_type: cosine
 warmup_ratio: 0.1
 bf16: true
@@ -43,4 +47,4 @@ resume_from_checkpoint: null
 val_size: 0.1
 per_device_eval_batch_size: 1
 eval_strategy: steps
-eval_steps: 100
+eval_steps: 50

@@ -1,16 +1,20 @@
-"""Cross-platform LLaMA-Factory trainer for GLM-OCR prescription fine-tune.
+"""Fine-tune GLM-OCR with LLaMA-Factory from data/glm_finetune/labels.csv.
 
-Run on a GPU machine:
+Flow:
+  labels.csv + images → ShareGPT JSON → LLaMA-Factory LoRA/full SFT → export
 
+Commands:
   python src/llamafactory_train.py setup
   python src/llamafactory_train.py prepare
   python src/llamafactory_train.py train --mode lora
   python src/llamafactory_train.py export
+  python src/llamafactory_train.py ollama --name glm-ocr-rx
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -29,6 +33,8 @@ CONFIGS = {
     "lora": ROOT / "finetune_glm" / "configs" / "lora.yaml",
     "full": ROOT / "finetune_glm" / "configs" / "full.yaml",
 }
+LABELS = ROOT / "data" / "glm_finetune" / "labels.csv"
+LOCAL_JSON = ROOT / "data" / "glm_finetune" / "prescriptions.json"
 
 
 def _venv_python() -> Path:
@@ -49,6 +55,37 @@ def _run(cmd: list[str], cwd: Path | None = None, env: dict | None = None) -> No
     if env:
         merged.update(env)
     subprocess.check_call(cmd, cwd=str(cwd or ROOT), env=merged)
+
+
+def _count_sharegpt_samples() -> int:
+    if not LOCAL_JSON.exists():
+        return 0
+    try:
+        data = json.loads(LOCAL_JSON.read_text(encoding="utf-8"))
+        return len(data) if isinstance(data, list) else 0
+    except Exception:
+        return 0
+
+
+def _write_train_yaml(src_cfg: Path, dest_cfg: Path, n_samples: int) -> None:
+    """Copy train yaml and disable val split when the dataset is tiny."""
+    text = src_cfg.read_text(encoding="utf-8")
+    if n_samples < 10:
+        # Avoid empty train/eval splits on tiny prescription sets
+        lines: list[str] = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("val_size:"):
+                lines.append("val_size: 0.0")
+            elif stripped.startswith("eval_strategy:"):
+                lines.append('eval_strategy: "no"')
+            elif stripped.startswith("eval_steps:"):
+                continue
+            else:
+                lines.append(line)
+        text = "\n".join(lines) + "\n"
+        print(f"Small dataset ({n_samples} samples): val_size=0, eval disabled")
+    dest_cfg.write_text(text, encoding="utf-8")
 
 
 def cmd_setup(_: argparse.Namespace) -> None:
@@ -89,14 +126,27 @@ def cmd_setup(_: argparse.Namespace) -> None:
         ]
     )
     print("\nSetup OK.")
-    print("Next: python src/llamafactory_train.py prepare")
-    print("Then:  python src/llamafactory_train.py train --mode lora")
+    print("Next:")
+    print("  1. Put images in data\\glm_finetune\\images\\")
+    print("  2. Fill data\\glm_finetune\\labels.csv  (image,text,task)")
+    print("  3. python src\\llamafactory_train.py prepare")
+    print("  4. python src\\llamafactory_train.py train --mode lora")
 
 
-def cmd_prepare(_: argparse.Namespace) -> None:
+def cmd_prepare(args: argparse.Namespace) -> None:
+    """Build ShareGPT from labels.csv and sync into LLaMA-Factory/data."""
     from prepare_finetune import main as prepare_main
 
-    prepare_main([])
+    prep_args: list[str] = []
+    if not args.auto_ocr:
+        prep_args.append("--no-auto-ocr")
+    if args.force_ocr:
+        prep_args.append("--force-ocr")
+    if args.include_raw:
+        prep_args.append("--include-raw")
+    prepare_main(prep_args)
+    n = _count_sharegpt_samples()
+    print(f"Prepare done. ShareGPT samples ready: {n}")
 
 
 def cmd_train(args: argparse.Namespace) -> None:
@@ -109,14 +159,49 @@ def cmd_train(args: argparse.Namespace) -> None:
     vpy = _venv_python()
     if not vpy.exists():
         raise SystemExit(f"Missing finetune venv python: {vpy}\nRun setup first.")
+    if not LABELS.exists():
+        raise SystemExit(
+            f"Missing {LABELS}\n"
+            f"Create it with columns: image,text,task\n"
+            f"Example: copy data\\glm_finetune\\labels.example.csv data\\glm_finetune\\labels.csv"
+        )
 
-    # Always refresh ShareGPT dataset into LLaMA-Factory/data
-    from prepare_finetune import main as prepare_main
+    # Always rebuild ShareGPT from labels.csv (default: no auto-OCR)
+    if not args.skip_prepare:
+        prep = argparse.Namespace(
+            auto_ocr=args.auto_ocr,
+            force_ocr=False,
+            include_raw=args.include_raw,
+        )
+        cmd_prepare(prep)
 
-    prepare_main([])
+    n = _count_sharegpt_samples()
+    if n < 1:
+        raise SystemExit(
+            "No ShareGPT samples. Check labels.csv has image+text rows "
+            "and image files exist under data/glm_finetune/images/ or data/raw/"
+        )
+
+    llama_json = LLAMA_DIR / "data" / "prescriptions.json"
+    if not llama_json.exists():
+        raise SystemExit(
+            f"Dataset not synced to {llama_json}\n"
+            f"Run: python src\\llamafactory_train.py prepare"
+        )
 
     dest_cfg = LLAMA_DIR / f"glm_ocr_{mode}_prescriptions.yaml"
-    shutil.copy2(cfg, dest_cfg)
+    _write_train_yaml(cfg, dest_cfg, n)
+
+    # Warn if no CUDA (CPU train is extremely slow)
+    try:
+        probe = subprocess.check_output(
+            [str(vpy), "-c", "import torch; print(int(torch.cuda.is_available()))"],
+            text=True,
+        ).strip()
+        if probe != "1":
+            print("WARNING: CUDA not available. Training on CPU will be very slow.")
+    except Exception:
+        pass
 
     cli = _venv_cli()
     env = {
@@ -127,8 +212,11 @@ def cmd_train(args: argparse.Namespace) -> None:
         cmd = [str(cli), "train", str(dest_cfg)]
     else:
         cmd = [str(vpy), "-m", "llamafactory.cli", "train", str(dest_cfg)]
+    print(f"Training GLM-OCR ({mode}) on {n} labeled samples from labels.csv ...")
     _run(cmd, cwd=LLAMA_DIR, env=env)
-    print(f"Training finished. Check: {LLAMA_DIR / 'saves' / 'glm-ocr'}")
+    out = LLAMA_DIR / "saves" / "glm-ocr" / mode / "sft"
+    print(f"Training finished. Adapter/weights: {out}")
+    print("Next: python src\\llamafactory_train.py export")
 
 
 def cmd_export(args: argparse.Namespace) -> None:
@@ -157,6 +245,17 @@ def cmd_export(args: argparse.Namespace) -> None:
     _run(cmd, env=env)
     print(f"Merged model → {export_dir}")
 
+    # Point in-process OCR at the adapter for immediate use
+    ocr_cfg_path = ROOT / "configs" / "ocr.json"
+    if ocr_cfg_path.exists():
+        ocr = json.loads(ocr_cfg_path.read_text(encoding="utf-8"))
+        lf = ocr.setdefault("llamafactory", {})
+        rel = os.path.relpath(adapter, ROOT).replace("\\", "/")
+        lf["adapter"] = rel
+        lf["finetuning_type"] = "lora"
+        ocr_cfg_path.write_text(json.dumps(ocr, indent=2) + "\n", encoding="utf-8")
+        print(f"Updated configs/ocr.json llamafactory.adapter → {rel}")
+
 
 def cmd_ollama(args: argparse.Namespace) -> None:
     """Register merged HF export as an Ollama model (inference only)."""
@@ -170,7 +269,6 @@ def cmd_ollama(args: argparse.Namespace) -> None:
             f"  python src\\llamafactory_train.py export"
         )
 
-    # Prefer absolute FROM path so ollama create works from any cwd
     abs_model = export_dir.resolve().as_posix()
     modelfile = ROOT / "finetune_glm" / "Modelfile.generated"
     modelfile.write_text(
@@ -190,22 +288,57 @@ def cmd_ollama(args: argparse.Namespace) -> None:
     print(f"Ollama model created: {name}")
     print("Set configs/ocr.json:")
     print('  "backend": "ollama"')
-    print(f'  "ollama": {{ "model": "{name}", ... }}')
+    print(f'  "ollama": {{ "model": "{name}" }}')
+
+
+def cmd_status(_: argparse.Namespace) -> None:
+    print(f"labels.csv:     {LABELS.exists()}  ({LABELS})")
+    print(f"ShareGPT JSON:  {LOCAL_JSON.exists()}  samples={_count_sharegpt_samples()}")
+    print(f"LLaMA-Factory:  {LLAMA_DIR.exists()}  ({LLAMA_DIR})")
+    print(f"finetune venv:  {_venv_python().exists()}  ({_venv_python()})")
+    adapter = LLAMA_DIR / "saves" / "glm-ocr" / "lora" / "sft"
+    print(f"LoRA adapter:   {adapter.exists()}  ({adapter})")
+    export_dir = ROOT / "models" / "glm-ocr-finetuned"
+    print(f"exported HF:    {export_dir.exists()}  ({export_dir})")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="GLM-OCR fine-tune via LLaMA-Factory")
+    parser = argparse.ArgumentParser(
+        description="Fine-tune GLM-OCR from labels.csv via LLaMA-Factory"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_setup = sub.add_parser("setup", help="Create venv + clone/install LLaMA-Factory")
     p_setup.set_defaults(func=cmd_setup)
 
-    p_prep = sub.add_parser("prepare", help="Build ShareGPT dataset from labels.csv")
+    p_prep = sub.add_parser("prepare", help="Read labels.csv → ShareGPT for LLaMA-Factory")
+    p_prep.add_argument(
+        "--auto-ocr",
+        action="store_true",
+        help="Fill empty label text with GLM-OCR before building ShareGPT",
+    )
+    p_prep.add_argument("--force-ocr", action="store_true")
+    p_prep.add_argument("--include-raw", action="store_true")
     p_prep.set_defaults(func=cmd_prepare)
 
-    p_train = sub.add_parser("train", help="Train with LLaMA-Factory")
+    p_train = sub.add_parser("train", help="Train from labels.csv with LLaMA-Factory")
     p_train.add_argument("--mode", choices=["lora", "full"], default="lora")
     p_train.add_argument("--gpu", default="0", help="CUDA_VISIBLE_DEVICES value")
+    p_train.add_argument(
+        "--auto-ocr",
+        action="store_true",
+        help="Allow GLM-OCR to fill empty labels during prepare step",
+    )
+    p_train.add_argument(
+        "--include-raw",
+        action="store_true",
+        help="Also resolve images from data/raw/",
+    )
+    p_train.add_argument(
+        "--skip-prepare",
+        action="store_true",
+        help="Skip rebuilding ShareGPT (use existing prescriptions.json)",
+    )
     p_train.set_defaults(func=cmd_train)
 
     p_exp = sub.add_parser("export", help="Merge LoRA adapter to HF folder")
@@ -224,6 +357,9 @@ def main() -> None:
         help="Merged HF folder (default: models/glm-ocr-finetuned)",
     )
     p_ollama.set_defaults(func=cmd_ollama)
+
+    p_status = sub.add_parser("status", help="Show finetune paths / readiness")
+    p_status.set_defaults(func=cmd_status)
 
     args = parser.parse_args()
     args.func(args)
