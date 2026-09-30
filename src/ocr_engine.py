@@ -1,10 +1,17 @@
-"""GLM-OCR in-process via LLaMA-Factory ChatModel (no API server)."""
+"""GLM-OCR via Ollama (inference) and/or LLaMA-Factory ChatModel (in-process).
+
+Training is always LLaMA-Factory (not Ollama).
+Ollama is only for running glm-ocr:latest (or a merged fine-tune).
+"""
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +20,7 @@ LLAMA_SRC = ROOT / "third_party" / "LLaMA-Factory" / "src"
 
 _OCR_CFG: dict | None = None
 _CHAT_MODEL = None
+_LAST_BACKEND = "ollama"
 
 
 def _load_dotenv() -> None:
@@ -41,14 +49,22 @@ def load_ocr_config() -> dict:
 
 
 def get_backend() -> str:
-    return "llamafactory-inprocess"
+    cfg = load_ocr_config()
+    backend = str(cfg.get("backend") or "ollama").strip().lower()
+    if backend in {"llamafactory", "llamafactory-inprocess", "inprocess"}:
+        return "llamafactory-inprocess"
+    return "ollama"
 
 
 def last_backend() -> str:
-    return "llamafactory-inprocess"
+    return _LAST_BACKEND
 
 
-def _cfg() -> dict:
+def _ollama_cfg() -> dict:
+    return load_ocr_config().get("ollama") or {}
+
+
+def _lf_cfg() -> dict:
     return load_ocr_config().get("llamafactory") or {}
 
 
@@ -68,11 +84,9 @@ def _ensure_llamafactory_importable() -> None:
             "LLaMA-Factory is not installed in this Python environment.\n"
             "Run once:\n"
             "  python src\\llamafactory_train.py setup\n"
-            "Then either:\n"
-            "  .\\.venv_finetune\\Scripts\\python.exe src\\pipeline.py data\\raw\\Test1.png\n"
-            "or install into your active venv:\n"
-            "  pip install -e third_party\\LLaMA-Factory\n"
-            "  pip install -U \"transformers>=5.3.0\" torch torchvision pillow"
+            "Or use Ollama for inference:\n"
+            "  set configs/ocr.json backend to \"ollama\"\n"
+            "  ollama pull glm-ocr:latest"
         ) from exc
 
 
@@ -88,6 +102,15 @@ def _prepare_image(image_path: Path, max_side: int = 1600):
             Image.Resampling.LANCZOS,
         )
     return img
+
+
+def _image_to_b64(image_path: Path, max_side: int = 1600) -> str:
+    import io
+
+    img = _prepare_image(image_path, max_side=max_side)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def _dedupe_ocr_text(text: str) -> str:
@@ -122,8 +145,54 @@ def _dedupe_ocr_text(text: str) -> str:
     return "\n".join(cleaned)
 
 
+def _ocr_ollama(image_path: Path) -> str:
+    """Call Ollama native /api/generate (recommended for GLM-OCR vision)."""
+    global _LAST_BACKEND
+    _LAST_BACKEND = "ollama"
+    _load_dotenv()
+    cfg = _ollama_cfg()
+    host = str(cfg.get("host") or "http://127.0.0.1:11434").rstrip("/")
+    model = str(cfg.get("model") or "glm-ocr:latest")
+    prompt = str(cfg.get("prompt") or "Text Recognition:")
+    max_side = int(cfg.get("max_image_side") or 1600)
+    max_tokens = int(cfg.get("max_tokens") or 768)
+    timeout = int(cfg.get("timeout_sec") or 300)
+
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "images": [_image_to_b64(Path(image_path), max_side=max_side)],
+        "stream": False,
+        "options": {
+            "temperature": 0,
+            "num_predict": max_tokens,
+        },
+    }
+    url = f"{host}/api/generate"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"Ollama not reachable at {url}\n"
+            f"Install/start Ollama, then:\n"
+            f"  ollama pull glm-ocr:latest\n"
+            f"Detail: {exc}"
+        ) from exc
+
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(f"Ollama error: {data['error']}")
+    return str((data or {}).get("response") or "").strip()
+
+
 def get_chat_model():
-    """Load GLM-OCR once and reuse it for later images."""
+    """Load GLM-OCR once via LLaMA-Factory and reuse it."""
     global _CHAT_MODEL
     if _CHAT_MODEL is not None:
         return _CHAT_MODEL
@@ -132,9 +201,8 @@ def get_chat_model():
     _ensure_llamafactory_importable()
     from llamafactory.chat import ChatModel
 
-    cfg = _cfg()
+    cfg = _lf_cfg()
     model_path = str(cfg.get("model") or "zai-org/GLM-OCR")
-    # Prefer local merged fine-tune if present.
     local_ft = ROOT / "models" / "glm-ocr-finetuned"
     if local_ft.exists() and any(local_ft.iterdir()):
         model_path = str(local_ft)
@@ -160,7 +228,9 @@ def get_chat_model():
 
 
 def _ocr_inprocess(image_path: Path) -> str:
-    cfg = _cfg()
+    global _LAST_BACKEND
+    _LAST_BACKEND = "llamafactory-inprocess"
+    cfg = _lf_cfg()
     prompt = str(cfg.get("prompt") or "Text Recognition:")
     max_side = int(cfg.get("max_image_side") or 1600)
     max_tokens = int(cfg.get("max_tokens") or 768)
@@ -185,8 +255,14 @@ def _ocr_inprocess(image_path: Path) -> str:
 
 
 def ocr_image(image_path: Path, output_dir: Path | None = None) -> list[str]:
-    """Load GLM-OCR in this process and OCR one image (no server)."""
-    text = _dedupe_ocr_text(_ocr_inprocess(Path(image_path)))
+    """OCR one image using configs/ocr.json backend (ollama or in-process)."""
+    backend = get_backend()
+    if backend == "llamafactory-inprocess":
+        raw = _ocr_inprocess(Path(image_path))
+    else:
+        raw = _ocr_ollama(Path(image_path))
+
+    text = _dedupe_ocr_text(raw)
     lines = [part for part in text.splitlines() if part.strip()]
     if output_dir is not None:
         out = Path(output_dir)
@@ -194,7 +270,7 @@ def ocr_image(image_path: Path, output_dir: Path | None = None) -> list[str]:
         (out / f"{Path(image_path).stem}_ocr.json").write_text(
             json.dumps(
                 {
-                    "backend": "llamafactory-inprocess",
+                    "backend": last_backend(),
                     "text": text,
                     "lines": lines,
                 },

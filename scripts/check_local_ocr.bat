@@ -1,24 +1,29 @@
 @echo off
-REM Check in-process LLaMA-Factory OCR setup (no server)
+REM Check Ollama + glm-ocr:latest for local OCR
 setlocal
 cd /d "%~dp0.."
 
-echo === LLaMA-Factory install ===
-if exist ".venv_finetune\Scripts\python.exe" (
-  set "PY=.venv_finetune\Scripts\python.exe"
-) else (
-  set "PY=.\.venv\Scripts\python.exe"
-)
-
-"%PY%" -c "import sys; sys.path.insert(0,'src'); from ocr_engine import _ensure_llamafactory_importable, get_backend; _ensure_llamafactory_importable(); print('backend', get_backend()); print('LLaMA-Factory import OK')"
+where ollama >nul 2>&1
 if errorlevel 1 (
-  echo.
-  echo Run setup first:
-  echo   python src\llamafactory_train.py setup
+  echo Ollama not found in PATH.
+  echo Install from https://ollama.com/download
   exit /b 1
 )
 
+echo === ollama version ===
+ollama --version
+
 echo.
-echo Setup OK. Single command run:
-echo   %PY% src\pipeline.py data\raw\YourImage.png
+echo === installed models ===
+ollama list
+
+echo.
+echo Pull latest GLM-OCR if missing:
+echo   ollama pull glm-ocr:latest
+echo.
+echo configs\ocr.json backend should be: ollama
+echo model: glm-ocr:latest
+echo.
+echo Test:
+echo   python src\pipeline.py data\raw\YourImage.png
 exit /b 0

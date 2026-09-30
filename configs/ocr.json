@@ -1,5 +1,13 @@
 {
-  "backend": "llamafactory-inprocess",
+  "backend": "ollama",
+  "ollama": {
+    "host": "http://127.0.0.1:11434",
+    "model": "glm-ocr:latest",
+    "prompt": "Text Recognition:",
+    "max_image_side": 1600,
+    "max_tokens": 768,
+    "timeout_sec": 300
+  },
   "llamafactory": {
     "model": "zai-org/GLM-OCR",
     "template": "glm_ocr",

@@ -158,6 +158,41 @@ def cmd_export(args: argparse.Namespace) -> None:
     print(f"Merged model → {export_dir}")
 
 
+def cmd_ollama(args: argparse.Namespace) -> None:
+    """Register merged HF export as an Ollama model (inference only)."""
+    export_dir = Path(args.model_dir) if args.model_dir else ROOT / "models" / "glm-ocr-finetuned"
+    name = args.name.strip() or "glm-ocr-rx"
+    if not export_dir.exists() or not any(export_dir.iterdir()):
+        raise SystemExit(
+            f"Merged model not found: {export_dir}\n"
+            f"Run first:\n"
+            f"  python src\\llamafactory_train.py train --mode lora\n"
+            f"  python src\\llamafactory_train.py export"
+        )
+
+    # Prefer absolute FROM path so ollama create works from any cwd
+    abs_model = export_dir.resolve().as_posix()
+    modelfile = ROOT / "finetune_glm" / "Modelfile.generated"
+    modelfile.write_text(
+        "\n".join(
+            [
+                f"FROM {abs_model}",
+                "TEMPLATE {{ .Prompt }}",
+                "RENDERER glm-ocr",
+                "PARSER glm-ocr",
+                "PARAMETER temperature 0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _run(["ollama", "create", name, "-f", str(modelfile)])
+    print(f"Ollama model created: {name}")
+    print("Set configs/ocr.json:")
+    print('  "backend": "ollama"')
+    print(f'  "ollama": {{ "model": "{name}", ... }}')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="GLM-OCR fine-tune via LLaMA-Factory")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -177,6 +212,18 @@ def main() -> None:
     p_exp.add_argument("--adapter", default="", help="Path to LoRA adapter dir")
     p_exp.add_argument("--output", default="", help="Export directory")
     p_exp.set_defaults(func=cmd_export)
+
+    p_ollama = sub.add_parser(
+        "ollama",
+        help="Create Ollama model from exported HF merge (inference only)",
+    )
+    p_ollama.add_argument("--name", default="glm-ocr-rx", help="Ollama model name")
+    p_ollama.add_argument(
+        "--model-dir",
+        default="",
+        help="Merged HF folder (default: models/glm-ocr-finetuned)",
+    )
+    p_ollama.set_defaults(func=cmd_ollama)
 
     args = parser.parse_args()
     args.func(args)

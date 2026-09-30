@@ -1,0 +1,15 @@
+# GLM-OCR Modelfile template for Ollama (after LLaMA-Factory export)
+#
+# Usage (after: python src\llamafactory_train.py export):
+#   python src\llamafactory_train.py ollama --name glm-ocr-rx
+#
+# Or manually:
+#   ollama create glm-ocr-rx -f finetune_glm\Modelfile
+#
+# FROM is rewritten by the ollama export helper to your merged HF folder.
+
+FROM ./models/glm-ocr-finetuned
+TEMPLATE {{ .Prompt }}
+RENDERER glm-ocr
+PARSER glm-ocr
+PARAMETER temperature 0
